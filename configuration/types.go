@@ -212,6 +212,14 @@ type DataEndConditions struct {
 	ReconciliationCoverage *ReconciliationCoverage `json:"reconciliation_coverage,omitempty"`
 }
 
+// DataParseInterval contains the configuration for 'parse' runs.
+type DataParseInterval struct {
+	// Start block identifier (inclusive)
+	Start types.BlockIdentifier `json:"start_block_identifier"`
+	// End block identifier (inclusive)
+	End types.BlockIdentifier `json:"end_block_identifier"`
+}
+
 // DataConfiguration contains all configurations to run check:data.
 type DataConfiguration struct {
 	// ActiveReconciliationConcurrency is the concurrency to use while fetching accounts
@@ -328,6 +336,9 @@ type DataConfiguration struct {
 	// to keep in the active reconciliation backlog before skipping
 	// reconciliation on new changes.
 	ReconcilerActiveBacklog *int `json:"reconciler_active_backlog,omitempty"`
+
+	// ParseInterval is the starting and ending block identifier for a 'parse' run
+	ParseInterval *DataParseInterval `json:"parse_interval,omitempty"`
 }
 
 // Configuration contains all configuration settings for running

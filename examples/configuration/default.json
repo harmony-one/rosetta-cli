@@ -1,9 +1,15 @@
 {
  "network": {
-  "blockchain": "Ethereum",
-  "network": "Ropsten"
+  "blockchain": "Harmony",
+  "network": "Testnet",
+  "sub_network_identifier": {
+   "network": "shard 0",
+   "metadata": {
+    "is_beacon": true
+   }
+  }
  },
- "online_url": "http://localhost:8080",
+ "online_url": "http://localhost:9799",
  "data_directory": "",
  "http_timeout": 10,
  "max_retries": 5,
