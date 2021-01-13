@@ -209,6 +209,9 @@ default values.`,
 	// Utils
 	rootCmd.AddCommand(utilsAsserterConfigurationCmd)
 	rootCmd.AddCommand(utilsTrainZstdCmd)
+
+	// Parse
+	rootCmd.AddCommand(parseSupplyCmd)
 }
 
 func initConfig() {
