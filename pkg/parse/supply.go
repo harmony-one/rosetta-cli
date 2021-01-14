@@ -78,6 +78,22 @@ func (t *SupplyParser) StartSyncing(
 	)
 }
 
+// StartPruning attempts to prune block storage
+// every 10 seconds.
+func (t *SupplyParser) StartPruning(
+	ctx context.Context,
+) error {
+	return t.syncer.Prune(ctx, t)
+}
+
+func (t *SupplyParser) PruneableIndex(ctx context.Context, headIndex int64) (int64, error) {
+	safestBlockToRemove := t.blockWorker.LatestResult.BlockID.Index - t.config.MaxSyncConcurrency
+	if safestBlockToRemove < 0 {
+		safestBlockToRemove = 0
+	}
+	return safestBlockToRemove, nil
+}
+
 // WatchEndConditions starts go routines to watch the end conditions
 func (t *SupplyParser) WatchEndConditions(
 	ctx context.Context,
@@ -309,8 +325,10 @@ func (b *supplyWorker) periodicallySaveUniqueAccounts(
 				break
 			}
 		}
-		if _, err := f.WriteString(fmt.Sprintf("%v", b.LatestResult.BlockID.Index)); err != nil {
-			color.Red(err.Error())
+		if b.LatestResult.BlockID != nil {
+			if _, err := f.WriteString(fmt.Sprintf("%v", b.LatestResult.BlockID.Index)); err != nil {
+				color.Red(err.Error())
+			}
 		}
 		if err := f.Close(); err != nil {
 			color.Red("trouble closing file: %v", err.Error())
