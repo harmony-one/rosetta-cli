@@ -84,7 +84,7 @@ func (t *SupplyParser) WatchEndConditions(
 ) error {
 	t.blockWorker.periodicFileLogger.StartFileLogger(ctx)
 	defer t.blockWorker.periodicFileLogger.StopFileLogger()
-	t.blockWorker.periodicallySaveUniqueAccounts(
+	t.blockWorker.periodicallySaveUniqueAccounts( // TODO: consider disabling this if causing problem...
 		ctx,
 		30*time.Minute,
 		fmt.Sprintf("./parse_last_seen_accounts_<%v>", time.Now().String()), // TODO: take as config input
@@ -261,6 +261,7 @@ func (b *supplyWorker) AddingBlock(
 			b.seenFinalBlocks[block.BlockIdentifier.Index] = true
 		}
 		b.LatestResult = currResult
+		transaction.Discard(ctx)
 		return nil
 	}, nil
 }
