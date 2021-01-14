@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/big"
 	"time"
 
 	"github.com/coinbase/rosetta-cli/configuration"
 	"github.com/coinbase/rosetta-cli/pkg/logger"
+	"github.com/coinbase/rosetta-cli/pkg/results"
 	"github.com/coinbase/rosetta-sdk-go/fetcher"
 	"github.com/coinbase/rosetta-sdk-go/statefulsyncer"
 	"github.com/coinbase/rosetta-sdk-go/storage"
@@ -73,14 +75,13 @@ func (t *SupplyParser) WatchEndConditions(
 				fmt.Printf("--- DONE ---\n")
 				return nil
 			} else {
-				fmt.Printf("finishing up...\n") // TODO: print final results...
+				fmt.Printf("finishing up...\n")
 			}
 		case <-tc.C:
+			fmt.Printf(types.PrettyPrintStruct(t.blockWorker.LatestResult))
 			if t.blockWorker.IsDone() {
-				fmt.Printf("--- DONE ---\n") // TODO: print final results...
+				fmt.Printf("--- DONE ---\n")
 				return nil
-			} else {
-				// TODO: print current progress for recovery reasons...
 			}
 		}
 	}
@@ -126,7 +127,6 @@ func InitializeSupplyParser(
 
 	supplyWorker := newSupplyWorker(
 		config.Data.ParseInterval,
-		localStore,
 		fetcher,
 		config.Network,
 		config.MaxSyncConcurrency,
@@ -164,14 +164,22 @@ func InitializeSupplyParser(
 	}
 }
 
+const (
+	// expendGasOperation is the operation type for gas on the Harmony network
+	expendGasOperation = "Gas"
+)
+
 // supplyWorker satisfies the storage.BlockWorker interface for the supply parser
 type supplyWorker struct {
 	interval           *configuration.DataParseInterval
-	counter            *storage.CounterStorage
 	seenFinalBlocks    map[int64]bool
+	seenAccounts       map[string]interface{}
+	rewardsSoFarCtr    *ThreadSafeCounter
+	supplySoFarCtr     *ThreadSafeCounter
 	fetcher            *fetcher.Fetcher
 	network            *types.NetworkIdentifier
 	periodicFileLogger *PeriodicFileLogger
+	LatestResult       *results.Supply
 }
 
 // AddingBlock is called by BlockStorage when adding a block to storage.
@@ -180,19 +188,57 @@ func (b *supplyWorker) AddingBlock(
 	block *types.Block,
 	transaction storage.DatabaseTransaction,
 ) (storage.CommitWorker, error) {
+	currResult := &results.Supply{
+		BlockID:           block.BlockIdentifier,
+		NumOfTransactions: big.NewInt(int64(len(block.Transactions))),
+	}
+	seenAccInBlock := map[string]interface{}{}
+	gasFees, posAmtTxd, negAmtTxd := big.NewInt(0), big.NewInt(0), big.NewInt(0)
+
 	for _, tx := range block.Transactions {
 		if len(tx.Operations) == 0 {
 			continue
 		}
-		// TODO: put logic for all calcs here
-		if err := b.periodicFileLogger.Log(tx); err != nil {
-			return nil, err
+		for _, op := range tx.Operations {
+			if _, ok := seenAccInBlock[op.Account.Address]; !ok {
+				seenAccInBlock[op.Account.Address] = struct{}{}
+			}
+			if _, ok := b.seenAccounts[op.Account.Address]; !ok {
+				b.seenAccounts[op.Account.Address] = struct{}{}
+			}
+			amount, err := types.AmountValue(op.Amount)
+			if err != nil {
+				return nil, err
+			}
+			if amount.Sign() == -1 {
+				negAmtTxd = new(big.Int).Add(new(big.Int).Abs(amount), negAmtTxd)
+			} else if amount.Sign() == 1 {
+				posAmtTxd = new(big.Int).Add(amount, posAmtTxd)
+			}
+			if op.Type == expendGasOperation {
+				gasFees = new(big.Int).Add(new(big.Int).Abs(amount), gasFees)
+			}
 		}
 	}
+
+	currResult.Rewards = new(big.Int).Sub(posAmtTxd, new(big.Int).Add(negAmtTxd, gasFees))
+	b.rewardsSoFarCtr.Add(currResult.Rewards)
+	b.supplySoFarCtr.Add(posAmtTxd)
+	currResult.GasFees = gasFees
+	currResult.AmountTransferred = negAmtTxd
+	currResult.NumOfAccounts = big.NewInt(int64(len(seenAccInBlock)))
+	currResult.NumOfUniqueAccountsSoFar = big.NewInt(int64(len(b.seenAccounts)))
+	currResult.RewardsSoFar = b.rewardsSoFarCtr.Count
+	currResult.CirculatingSupplySoFar = b.supplySoFarCtr.Count
+	if err := b.periodicFileLogger.Log(currResult); err != nil {
+		return nil, err
+	}
+
 	return func(ctx context.Context) error {
 		if _, ok := b.seenFinalBlocks[block.BlockIdentifier.Index]; ok {
 			b.seenFinalBlocks[block.BlockIdentifier.Index] = true
 		}
+		b.LatestResult = currResult
 		return nil
 	}, nil
 }
@@ -220,7 +266,6 @@ func (b *supplyWorker) IsDone() bool {
 
 func newSupplyWorker(
 	parseInterval *configuration.DataParseInterval,
-	db storage.Database,
 	fetcher *fetcher.Fetcher,
 	network *types.NetworkIdentifier,
 	maxSyncConcurrency int64,
@@ -235,13 +280,15 @@ func newSupplyWorker(
 	}
 	return &supplyWorker{
 		interval:        parseInterval,
-		counter:         storage.NewCounterStorage(db),
 		seenFinalBlocks: seenFinalBlocks,
+		seenAccounts:    map[string]interface{}{},
+		rewardsSoFarCtr: NewAtomicCounter(context.Background()),
+		supplySoFarCtr:  NewAtomicCounter(context.Background()),
+		fetcher:         fetcher,
+		network:         network,
 		periodicFileLogger: NewPeriodicFileLogger(
-			fmt.Sprintf("./parse_output_<%v>.txt", time.Now().String()), // TODO: take as config input
-			30*time.Second,
+			fmt.Sprintf("./parse_output_<%v>", time.Now().String()), // TODO: take as config input
+			2*time.Second,
 		),
-		fetcher: fetcher,
-		network: network,
 	}
 }

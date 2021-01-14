@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"os"
 	"sync"
 	"time"
@@ -14,15 +15,18 @@ import (
 const (
 	// PeriodicFileLoggerDelimiter is the log file delimiter
 	PeriodicFileLoggerDelimiter = "\n"
+	PeriodicFileChangeValue     = 2.4e+7 // ~25MB
 )
 
 // PeriodicFileLogger ..
 type PeriodicFileLogger struct {
-	period      time.Duration
-	buffer      []string
-	bufferMutex sync.Mutex
-	filePath    string
-	done        chan bool
+	period       time.Duration
+	buffer       []string
+	bufferMutex  sync.Mutex
+	filePath     string
+	currFilePath string
+	filePage     int64
+	done         chan bool
 }
 
 // Log a JSON marshallable struct to one line on a file (periodically)
@@ -53,12 +57,11 @@ func (l *PeriodicFileLogger) StartFileLogger(ctx context.Context) {
 			case <-ctx.Done():
 				l.write()
 				return
-			case <-tc.C:
-				l.write()
-				return
 			case <-l.done:
 				l.write()
 				return
+			case <-tc.C:
+				l.write()
 			}
 		}
 	}()
@@ -68,22 +71,39 @@ func (l *PeriodicFileLogger) StartFileLogger(ctx context.Context) {
 func (l *PeriodicFileLogger) write() {
 	l.bufferMutex.Lock()
 	defer l.bufferMutex.Unlock()
+	defer func() {
+		l.buffer = nil
+	}()
 
-	f, err := os.OpenFile(l.filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(l.currFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		fmt.Printf(err.Error())
-	} else {
-		for _, str := range l.buffer {
-			if _, err := f.WriteString(str + PeriodicFileLoggerDelimiter); err != nil {
-				fmt.Printf(err.Error())
-				break
+		color.Red(err.Error())
+		return
+	}
+
+	for _, str := range l.buffer {
+		if _, err := f.WriteString(str + PeriodicFileLoggerDelimiter); err != nil {
+			color.Red(err.Error())
+			break
+		}
+		if stat, err := f.Stat(); err != nil {
+			return
+		} else if stat.Size() > PeriodicFileChangeValue {
+			l.filePage++
+			l.currFilePath = fmt.Sprintf("%v%v", l.filePath, l.filePage)
+			f, err = os.OpenFile(l.currFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if err != nil {
+				color.Red(err.Error())
+				return
 			}
 		}
-		if len(l.buffer) > 0 {
-			color.Blue("wrote %v new entries to log file at %v", len(l.buffer), l.filePath)
-		}
 	}
-	l.buffer = nil
+	if len(l.buffer) > 0 {
+		color.Blue("wrote %v new entries to log file(s)", len(l.buffer))
+	}
+	if err := f.Close(); err != nil {
+		color.Red("trouble closing file: %v", err.Error())
+	}
 }
 
 // NewPeriodicFileLogger ..
@@ -94,5 +114,36 @@ func NewPeriodicFileLogger(filePath string, period time.Duration) *PeriodicFileL
 		filePath: filePath,
 		done:     make(chan bool, 1),
 	}
+	lgr.currFilePath = fmt.Sprintf("%v%v", lgr.filePath, lgr.filePage)
 	return lgr
+}
+
+// ThreadSafeCounter thread safe Count
+type ThreadSafeCounter struct {
+	counterChan chan *big.Int
+	Count       *big.Int
+}
+
+func (c *ThreadSafeCounter) countLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case val := <-c.counterChan:
+			c.Count = new(big.Int).Add(c.Count, val)
+		}
+	}
+}
+
+func (c *ThreadSafeCounter) Add(val *big.Int) {
+	c.counterChan <- val
+}
+
+func NewAtomicCounter(ctx context.Context) *ThreadSafeCounter {
+	ctr := &ThreadSafeCounter{
+		counterChan: make(chan *big.Int),
+		Count:       new(big.Int),
+	}
+	go ctr.countLoop(ctx)
+	return ctr
 }
