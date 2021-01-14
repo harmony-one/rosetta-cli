@@ -16,6 +16,7 @@ import (
 	"github.com/coinbase/rosetta-sdk-go/syncer"
 	"github.com/coinbase/rosetta-sdk-go/types"
 	"github.com/coinbase/rosetta-sdk-go/utils"
+	"github.com/fatih/color"
 )
 
 const (
@@ -50,11 +51,27 @@ func (t *SupplyParser) CloseDatabase(ctx context.Context) {
 	}
 }
 
-// StartSyncing syncs from startIndex to endIndex.
+// StartSyncing syncs from startIndex to endIndex, so long as the blocks are finalized.
 func (t *SupplyParser) StartSyncing(
 	ctx context.Context,
 ) error {
-	// TODO: verify that blocks exist on node before starting...
+	_, err := t.fetcher.BlockRetry(ctx, t.network, &types.PartialBlockIdentifier{
+		Index: &t.config.Data.ParseInterval.Start.Index,
+		Hash:  &t.config.Data.ParseInterval.Start.Hash,
+	})
+	if err != nil {
+		color.Red("start block (%v) not found", t.config.Data.ParseInterval.Start.Hash)
+		return err.Err
+	}
+	_, err = t.fetcher.BlockRetry(ctx, t.network, &types.PartialBlockIdentifier{
+		Index: &t.config.Data.ParseInterval.End.Index,
+		Hash:  &t.config.Data.ParseInterval.End.Hash,
+	})
+	if err != nil {
+		color.Red("end block (%v) not found", t.config.Data.ParseInterval.End.Hash)
+		return err.Err
+	}
+
 	return t.syncer.Sync(
 		ctx, t.config.Data.ParseInterval.Start.Index, t.config.Data.ParseInterval.End.Index,
 	)
@@ -74,9 +91,8 @@ func (t *SupplyParser) WatchEndConditions(
 			if t.blockWorker.IsDone() {
 				fmt.Printf("--- DONE ---\n")
 				return nil
-			} else {
-				fmt.Printf("finishing up...\n")
 			}
+			return ctx.Err()
 		case <-tc.C:
 			fmt.Printf(types.PrettyPrintStruct(t.blockWorker.LatestResult) + "\n")
 			if t.blockWorker.IsDone() {
@@ -288,7 +304,7 @@ func newSupplyWorker(
 		network:         network,
 		periodicFileLogger: NewPeriodicFileLogger(
 			fmt.Sprintf("./parse_output_<%v>", time.Now().String()), // TODO: take as config input
-			2*time.Second,
+			20*time.Second,
 		),
 	}
 }
