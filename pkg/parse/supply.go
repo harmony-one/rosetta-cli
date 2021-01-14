@@ -23,8 +23,6 @@ const (
 
 	// DoneCheckPeriod ..
 	DoneCheckPeriod = 1 * time.Second
-
-	debug = false
 )
 
 // DataTester coordinates the `parse:supply` run.
@@ -40,7 +38,7 @@ type SupplyParser struct {
 	signalReceived *bool
 	genesisBlock   *types.BlockIdentifier
 	cancel         context.CancelFunc
-	blockWorker    *blockWorker
+	blockWorker    *supplyWorker
 }
 
 // CloseDatabase closes the database used by DataTester.
@@ -64,6 +62,8 @@ func (t *SupplyParser) StartSyncing(
 func (t *SupplyParser) WatchEndConditions(
 	ctx context.Context,
 ) error {
+	t.blockWorker.periodicFileLogger.StartFileLogger(ctx)
+	defer t.blockWorker.periodicFileLogger.StopFileLogger()
 	tc := time.NewTicker(DoneCheckPeriod)
 	defer tc.Stop()
 	for {
@@ -100,7 +100,7 @@ func InitializeSupplyParser(
 		log.Fatalf("%s: cannot create command path", err.Error())
 	}
 
-	opts := []storage.BadgerOption{}
+	var opts []storage.BadgerOption
 	if config.CompressionDisabled {
 		opts = append(opts, storage.WithoutCompression())
 	}
@@ -124,8 +124,9 @@ func InitializeSupplyParser(
 		config.Data.LogReconciliations,
 	)
 
-	worker := newBlockWorker(
+	supplyWorker := newSupplyWorker(
 		config.Data.ParseInterval,
+		localStore,
 		fetcher,
 		config.MaxSyncConcurrency,
 	)
@@ -139,7 +140,7 @@ func InitializeSupplyParser(
 		lgr,
 		cancel,
 		[]storage.BlockWorker{
-			worker,
+			supplyWorker,
 		},
 		syncer.DefaultCacheSize,
 		config.MaxSyncConcurrency,
@@ -158,24 +159,30 @@ func InitializeSupplyParser(
 		fetcher:        fetcher,
 		signalReceived: signalReceived,
 		genesisBlock:   genesisBlock,
-		blockWorker:    worker,
+		blockWorker:    supplyWorker,
 	}
 }
 
-// blockWorker for the supply parser's block worker
-type blockWorker struct {
-	parseOutputFile string
-	interval        *configuration.DataParseInterval
-	seenFinalBlocks map[int64]bool
-	fetcher         *fetcher.Fetcher
+// supplyWorker satisfies the storage.BlockWorker interface for the supply parser
+type supplyWorker struct {
+	interval           *configuration.DataParseInterval
+	counter            *storage.CounterStorage
+	seenFinalBlocks    map[int64]bool
+	fetcher            *fetcher.Fetcher
+	periodicFileLogger *PeriodicFileLogger
 }
 
 // AddingBlock is called by BlockStorage when adding a block to storage.
-func (b *blockWorker) AddingBlock(
+func (b *supplyWorker) AddingBlock(
 	ctx context.Context,
 	block *types.Block,
 	transaction storage.DatabaseTransaction,
 ) (storage.CommitWorker, error) {
+	for _, tx := range block.Transactions {
+		if err := b.periodicFileLogger.Log(tx); err != nil {
+			return nil, err
+		}
+	}
 	return func(ctx context.Context) error {
 		if _, ok := b.seenFinalBlocks[block.BlockIdentifier.Index]; ok {
 			b.seenFinalBlocks[block.BlockIdentifier.Index] = true
@@ -185,7 +192,7 @@ func (b *blockWorker) AddingBlock(
 }
 
 // RemovingBlock is called by BlockStorage when removing a block from storage.
-func (b *blockWorker) RemovingBlock(
+func (b *supplyWorker) RemovingBlock(
 	ctx context.Context,
 	block *types.Block,
 	transaction storage.DatabaseTransaction,
@@ -196,7 +203,7 @@ func (b *blockWorker) RemovingBlock(
 }
 
 // IsDone returns if the worker is done
-func (b *blockWorker) IsDone() bool {
+func (b *supplyWorker) IsDone() bool {
 	for _, v := range b.seenFinalBlocks {
 		if v == false {
 			return false
@@ -205,11 +212,12 @@ func (b *blockWorker) IsDone() bool {
 	return true
 }
 
-func newBlockWorker(
+func newSupplyWorker(
 	parseInterval *configuration.DataParseInterval,
+	db storage.Database,
 	fetcher *fetcher.Fetcher,
 	maxSyncConcurrency int64,
-) *blockWorker {
+) *supplyWorker {
 	seenFinalBlocks := map[int64]bool{}
 	startingVal := parseInterval.End.Index - maxSyncConcurrency
 	if startingVal < 0 {
@@ -218,10 +226,15 @@ func newBlockWorker(
 	for i := startingVal; i <= parseInterval.End.Index; i++ {
 		seenFinalBlocks[i] = false
 	}
-	return &blockWorker{
-		interval:        parseInterval,
-		parseOutputFile: "./parse_result.txt",
-		seenFinalBlocks: seenFinalBlocks,
-		fetcher:         fetcher,
+	lgr := NewPeriodicFileLogger(
+		fmt.Sprintf("./parse_output_<%v>.txt", time.Now().String()), // TODO: take as config input
+		30*time.Second,
+	)
+	return &supplyWorker{
+		interval:           parseInterval,
+		counter:            storage.NewCounterStorage(db),
+		seenFinalBlocks:    seenFinalBlocks,
+		periodicFileLogger: lgr,
+		fetcher:            fetcher,
 	}
 }

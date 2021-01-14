@@ -9,7 +9,6 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/coinbase/rosetta-cli/pkg/parse"
-	"github.com/coinbase/rosetta-cli/pkg/results"
 	"github.com/coinbase/rosetta-sdk-go/fetcher"
 	"github.com/coinbase/rosetta-sdk-go/utils"
 )
@@ -38,27 +37,13 @@ func runParseSupplyCmd(cmd *cobra.Command, args []string) error {
 	_, _, fetchErr := fetch.InitializeAsserter(ctx, Config.Network)
 	if fetchErr != nil {
 		cancel()
-		return results.ExitData(
-			Config,
-			nil,
-			nil,
-			fmt.Errorf("%w: unable to initialize asserter", fetchErr.Err),
-			"",
-			"",
-		)
+		return fmt.Errorf("%w: unable to initialize asserter", fetchErr.Err)
 	}
 
 	networkStatus, err := utils.CheckNetworkSupported(ctx, Config.Network, fetch)
 	if err != nil {
 		cancel()
-		return results.ExitData(
-			Config,
-			nil,
-			nil,
-			fmt.Errorf("%w: unable to confirm network", err),
-			"",
-			"",
-		)
+		return fmt.Errorf("%w: unable to confirm network", err)
 	}
 
 	supplyParser := parse.InitializeSupplyParser(
