@@ -100,11 +100,11 @@ func (t *SupplyParser) WatchEndConditions(
 ) error {
 	t.blockWorker.periodicFileLogger.StartFileLogger(ctx)
 	defer t.blockWorker.periodicFileLogger.StopFileLogger()
-	t.blockWorker.periodicallySaveUniqueAccounts( // TODO: consider disabling this if causing problem...
-		ctx,
-		30*time.Minute,
-		fmt.Sprintf("./parse_last_seen_accounts_<%v>", time.Now().String()), // TODO: take as config input
-	)
+	//t.blockWorker.periodicallySaveUniqueAccounts( // TODO: consider disabling this if causing problem...
+	//	ctx,
+	//	30*time.Minute,
+	//	fmt.Sprintf("./parse_last_seen_accounts_<%v>", time.Now().String()), // TODO: take as config input
+	//)
 	tc := time.NewTicker(DoneCheckPeriod)
 	defer tc.Stop()
 	for {
@@ -241,9 +241,9 @@ func (b *supplyWorker) AddingBlock(
 			if _, ok := seenAccInBlock[op.Account.Address]; !ok {
 				seenAccInBlock[op.Account.Address] = struct{}{}
 			}
-			if _, ok := b.seenAccounts[op.Account.Address]; !ok {
-				b.seenAccounts[op.Account.Address] = struct{}{}
-			}
+			//if _, ok := b.seenAccounts[op.Account.Address]; !ok {
+			//	b.seenAccounts[op.Account.Address] = struct{}{}
+			//}
 			amount, err := types.AmountValue(op.Amount)
 			if err != nil {
 				return nil, err
@@ -265,7 +265,7 @@ func (b *supplyWorker) AddingBlock(
 	currResult.GasFees = gasFees
 	currResult.AmountTransferred = negAmtTxd
 	currResult.NumOfAccounts = big.NewInt(int64(len(seenAccInBlock)))
-	currResult.NumOfUniqueAccountsSoFar = big.NewInt(int64(len(b.seenAccounts)))
+	//currResult.NumOfUniqueAccountsSoFar = big.NewInt(int64(len(b.seenAccounts)))
 	currResult.RewardsSoFar = b.rewardsSoFarCtr.Count
 	currResult.CirculatingSupplySoFar = b.supplySoFarCtr.Count
 	if err := b.periodicFileLogger.Log(currResult); err != nil {
