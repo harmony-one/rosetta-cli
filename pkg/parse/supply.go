@@ -128,6 +128,7 @@ func InitializeSupplyParser(
 		config.Data.ParseInterval,
 		localStore,
 		fetcher,
+		config.Network,
 		config.MaxSyncConcurrency,
 	)
 
@@ -169,6 +170,7 @@ type supplyWorker struct {
 	counter            *storage.CounterStorage
 	seenFinalBlocks    map[int64]bool
 	fetcher            *fetcher.Fetcher
+	network            *types.NetworkIdentifier
 	periodicFileLogger *PeriodicFileLogger
 }
 
@@ -179,6 +181,10 @@ func (b *supplyWorker) AddingBlock(
 	transaction storage.DatabaseTransaction,
 ) (storage.CommitWorker, error) {
 	for _, tx := range block.Transactions {
+		if len(tx.Operations) == 0 {
+			continue
+		}
+		// TODO: put logic for all calcs here
 		if err := b.periodicFileLogger.Log(tx); err != nil {
 			return nil, err
 		}
@@ -216,6 +222,7 @@ func newSupplyWorker(
 	parseInterval *configuration.DataParseInterval,
 	db storage.Database,
 	fetcher *fetcher.Fetcher,
+	network *types.NetworkIdentifier,
 	maxSyncConcurrency int64,
 ) *supplyWorker {
 	seenFinalBlocks := map[int64]bool{}
@@ -226,15 +233,15 @@ func newSupplyWorker(
 	for i := startingVal; i <= parseInterval.End.Index; i++ {
 		seenFinalBlocks[i] = false
 	}
-	lgr := NewPeriodicFileLogger(
-		fmt.Sprintf("./parse_output_<%v>.txt", time.Now().String()), // TODO: take as config input
-		30*time.Second,
-	)
 	return &supplyWorker{
-		interval:           parseInterval,
-		counter:            storage.NewCounterStorage(db),
-		seenFinalBlocks:    seenFinalBlocks,
-		periodicFileLogger: lgr,
-		fetcher:            fetcher,
+		interval:        parseInterval,
+		counter:         storage.NewCounterStorage(db),
+		seenFinalBlocks: seenFinalBlocks,
+		periodicFileLogger: NewPeriodicFileLogger(
+			fmt.Sprintf("./parse_output_<%v>.txt", time.Now().String()), // TODO: take as config input
+			30*time.Second,
+		),
+		fetcher: fetcher,
+		network: network,
 	}
 }
