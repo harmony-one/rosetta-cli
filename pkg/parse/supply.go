@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"os"
 	"time"
 
 	"github.com/coinbase/rosetta-cli/configuration"
@@ -83,6 +84,11 @@ func (t *SupplyParser) WatchEndConditions(
 ) error {
 	t.blockWorker.periodicFileLogger.StartFileLogger(ctx)
 	defer t.blockWorker.periodicFileLogger.StopFileLogger()
+	t.blockWorker.periodicallySaveUniqueAccounts(
+		ctx,
+		30*time.Minute,
+		fmt.Sprintf("./parse_last_seen_accounts_<%v>", time.Now().String()), // TODO: take as config input
+	)
 	tc := time.NewTicker(DoneCheckPeriod)
 	defer tc.Stop()
 	for {
@@ -280,6 +286,49 @@ func (b *supplyWorker) IsDone() bool {
 	return true
 }
 
+func (b *supplyWorker) periodicallySaveUniqueAccounts(
+	ctx context.Context,
+	interval time.Duration,
+	fileName string,
+) {
+	write := func() {
+		color.Cyan("Saving Uniquely Seen Accounts")
+		if err := os.Remove(fileName); err != nil && !os.IsNotExist(err) {
+			color.Red(err.Error())
+			return
+		}
+		f, err := os.OpenFile(fileName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			color.Red(err.Error())
+			return
+		}
+		for k := range b.seenAccounts {
+			if _, err := f.WriteString(k + PeriodicFileLoggerDelimiter); err != nil {
+				color.Red(err.Error())
+				break
+			}
+		}
+		if _, err := f.WriteString(fmt.Sprintf("%v", b.LatestResult.BlockID.Index)); err != nil {
+			color.Red(err.Error())
+		}
+		if err := f.Close(); err != nil {
+			color.Red("trouble closing file: %v", err.Error())
+		}
+	}
+
+	tc := time.NewTicker(interval)
+	defer tc.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			write()
+			return
+		case <-tc.C:
+			write()
+		}
+	}
+}
+
 func newSupplyWorker(
 	parseInterval *configuration.DataParseInterval,
 	fetcher *fetcher.Fetcher,
@@ -302,6 +351,7 @@ func newSupplyWorker(
 		supplySoFarCtr:  NewAtomicCounter(context.Background()),
 		fetcher:         fetcher,
 		network:         network,
+		LatestResult:    &results.Supply{},
 		periodicFileLogger: NewPeriodicFileLogger(
 			fmt.Sprintf("./parse_output_<%v>", time.Now().String()), // TODO: take as config input
 			20*time.Second,
