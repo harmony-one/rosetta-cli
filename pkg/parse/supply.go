@@ -78,7 +78,7 @@ func (t *SupplyParser) WatchEndConditions(
 				fmt.Printf("finishing up...\n")
 			}
 		case <-tc.C:
-			fmt.Printf(types.PrettyPrintStruct(t.blockWorker.LatestResult))
+			fmt.Printf(types.PrettyPrintStruct(t.blockWorker.LatestResult) + "\n")
 			if t.blockWorker.IsDone() {
 				fmt.Printf("--- DONE ---\n")
 				return nil
