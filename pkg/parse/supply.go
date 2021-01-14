@@ -26,7 +26,7 @@ const (
 	dataCmdName = "parse-supply"
 
 	// DoneCheckPeriod ..
-	DoneCheckPeriod = 1 * time.Second
+	DoneCheckPeriod = 10 * time.Second
 )
 
 // DataTester coordinates the `parse:supply` run.
