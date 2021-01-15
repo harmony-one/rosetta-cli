@@ -101,10 +101,10 @@ func (t *SupplyParser) PruneableIndex(ctx context.Context, headIndex int64) (int
 func (t *SupplyParser) WatchEndConditions(
 	ctx context.Context,
 ) error {
-	t.blockWorker.periodicFileLogger.StartFileLogger(ctx)
+	t.blockWorker.periodicFileLogger.StartFileLogger(context.Background())
 	defer t.blockWorker.periodicFileLogger.StopFileLogger()
 	t.blockWorker.periodicallySaveUniqueAccounts( // TODO: consider disabling this if causing problem...
-		ctx,
+		context.Background(),
 		30*time.Minute,
 		fmt.Sprintf("./parse_last_seen_accounts_<%v>", time.Now().String()), // TODO: take as config input
 	)
