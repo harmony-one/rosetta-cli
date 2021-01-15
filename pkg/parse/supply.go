@@ -103,11 +103,11 @@ func (t *SupplyParser) WatchEndConditions(
 ) error {
 	t.blockWorker.periodicFileLogger.StartFileLogger(ctx)
 	defer t.blockWorker.periodicFileLogger.StopFileLogger()
-	//t.blockWorker.periodicallySaveUniqueAccounts( // TODO: consider disabling this if causing problem...
-	//	ctx,
-	//	30*time.Minute,
-	//	fmt.Sprintf("./parse_last_seen_accounts_<%v>", time.Now().String()), // TODO: take as config input
-	//)
+	t.blockWorker.periodicallySaveUniqueAccounts( // TODO: consider disabling this if causing problem...
+		ctx,
+		30*time.Minute,
+		fmt.Sprintf("./parse_last_seen_accounts_<%v>", time.Now().String()), // TODO: take as config input
+	)
 	tc := time.NewTicker(DoneCheckPeriod)
 	defer tc.Stop()
 
@@ -213,8 +213,11 @@ func InitializeSupplyParser(
 }
 
 const (
+	// WARNING: following constants are dependant on the Harmony Rosetta Implementation.
 	// expendGasOperation is the operation type for gas on the Harmony network
 	expendGasOperation = "Gas"
+	// crossShardTransferOperation is the operation type for cx on the Harmony network
+	crossShardTransferOperation = "NativeCrossShardTransfer"
 )
 
 // supplyWorker satisfies the storage.BlockWorker interface for the supply parser
@@ -242,6 +245,7 @@ func (b *supplyWorker) AddingBlock(
 	}
 	seenAccInBlock := map[string]interface{}{}
 	gasFees, posAmtTxd, negAmtTxd := big.NewInt(0), big.NewInt(0), big.NewInt(0)
+	cxFundsReceived, cxFundsSent := big.NewInt(0), big.NewInt(0)
 
 	for _, tx := range block.Transactions {
 		if len(tx.Operations) == 0 {
@@ -251,17 +255,23 @@ func (b *supplyWorker) AddingBlock(
 			if _, ok := seenAccInBlock[op.Account.Address]; !ok {
 				seenAccInBlock[op.Account.Address] = struct{}{}
 			}
-			//if _, ok := b.seenAccounts[op.Account.Address]; !ok {
-			//	b.seenAccounts[op.Account.Address] = struct{}{}
-			//}
+			if _, ok := b.seenAccounts[op.Account.Address]; !ok {
+				b.seenAccounts[op.Account.Address] = struct{}{}
+			}
 			amount, err := types.AmountValue(op.Amount)
 			if err != nil {
 				return nil, err
 			}
 			if amount.Sign() == -1 {
 				negAmtTxd = new(big.Int).Add(new(big.Int).Abs(amount), negAmtTxd)
+				if op.Type == crossShardTransferOperation {
+					cxFundsSent = new(big.Int).Add(new(big.Int).Abs(amount), cxFundsSent)
+				}
 			} else if amount.Sign() == 1 {
 				posAmtTxd = new(big.Int).Add(amount, posAmtTxd)
+				if op.Type == crossShardTransferOperation {
+					cxFundsReceived = new(big.Int).Add(new(big.Int).Abs(amount), cxFundsReceived)
+				}
 			}
 			if op.Type == expendGasOperation {
 				gasFees = new(big.Int).Add(new(big.Int).Abs(amount), gasFees)
@@ -269,13 +279,15 @@ func (b *supplyWorker) AddingBlock(
 		}
 	}
 
-	currResult.Rewards = new(big.Int).Sub(posAmtTxd, new(big.Int).Add(negAmtTxd, gasFees))
+	currResult.Rewards = new(big.Int).Sub(posAmtTxd, new(big.Int).Add(negAmtTxd, cxFundsReceived))
 	b.rewardsSoFarCtr.Add(currResult.Rewards)
 	b.supplySoFarCtr.Add(posAmtTxd)
+	currResult.CxSent = cxFundsSent
+	currResult.CxReceived = cxFundsReceived
 	currResult.GasFees = gasFees
 	currResult.AmountTransferred = negAmtTxd
 	currResult.NumOfAccounts = big.NewInt(int64(len(seenAccInBlock)))
-	//currResult.NumOfUniqueAccountsSoFar = big.NewInt(int64(len(b.seenAccounts)))
+	currResult.NumOfUniqueAccountsSoFar = big.NewInt(int64(len(b.seenAccounts)))
 	currResult.RewardsSoFar = b.rewardsSoFarCtr.Count
 	currResult.CirculatingSupplySoFar = b.supplySoFarCtr.Count
 	if err := b.periodicFileLogger.Log(currResult); err != nil {

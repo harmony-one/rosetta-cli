@@ -16,5 +16,7 @@ type Supply struct {
 	NumOfTransactions        *big.Int               `json:"number_of_transactions"`
 	NumOfAccounts            *big.Int               `json:"number_of_accounts"`
 	AmountTransferred        *big.Int               `json:"amount_transferred"`
+	CxReceived               *big.Int               `json:"cross_shard_amount_received"`
+	CxSent                   *big.Int               `json:"cross_shard_amount_sent"`
 	GasFees                  *big.Int               `json:"gas_fees"`
 }
