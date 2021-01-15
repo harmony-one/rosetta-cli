@@ -63,7 +63,7 @@ func runParseSupplyCmd(cmd *cobra.Command, args []string) error {
 		return supplyParser.StartSyncing(ctx)
 	})
 	g.Go(func() error {
-		return supplyParser.StartPruning(ctx)
+		return supplyParser.StartPruning(context.Background())
 	})
 	return supplyParser.WatchEndConditions(ctx)
 }
