@@ -103,18 +103,17 @@ func (t *SupplyParser) WatchEndConditions(
 ) error {
 	t.blockWorker.periodicFileLogger.StartFileLogger(ctx)
 	defer t.blockWorker.periodicFileLogger.StopFileLogger()
-	//t.blockWorker.periodicallySaveUniqueAccounts( // TODO: consider disabling this if causing problem...
-	//	ctx,
-	//	30*time.Minute,
-	//	fmt.Sprintf("./parse_last_seen_accounts_<%v>", time.Now().String()), // TODO: take as config input
-	//)
+	t.blockWorker.periodicallySaveUniqueAccounts( // TODO: consider disabling this if causing problem...
+		ctx,
+		30*time.Minute,
+		fmt.Sprintf("./parse_last_seen_accounts_<%v>", time.Now().String()), // TODO: take as config input
+	)
 	tc := time.NewTicker(DoneCheckPeriod)
 	defer tc.Stop()
 
 	done := func() error {
-		time.Sleep(10 * time.Second) // Arb amount of time
-		fmt.Printf("Total (Final) Block Rewards: %v\n", t.blockWorker.rewardsSoFarCtr.Count)
-		fmt.Printf("Total (Final) Circulating Supply: %v\n", t.blockWorker.supplySoFarCtr.Count)
+		fmt.Printf("Total (Final) Block Rewards: %v\n", t.blockWorker.rewardsSoFarCtr.GetCount())
+		fmt.Printf("Total (Final) Circulating Supply: %v\n", t.blockWorker.supplySoFarCtr.GetCount())
 		fmt.Printf("--- DONE ---\n")
 		return nil
 	}
@@ -122,6 +121,7 @@ func (t *SupplyParser) WatchEndConditions(
 	for {
 		select {
 		case <-ctx.Done():
+			fmt.Printf(types.PrettyPrintStruct(t.blockWorker.LatestResult) + "\n")
 			if t.blockWorker.IsDone() {
 				return done()
 			}
@@ -218,6 +218,11 @@ const (
 	expendGasOperation = "Gas"
 	// crossShardTransferOperation is the operation type for cx on the Harmony network
 	crossShardTransferOperation = "NativeCrossShardTransfer"
+	// preStakingBlockRewardsOperation is the operation type for all block rewards in the
+	// pre staking ear on the Harmony network.
+	preStakingBlockRewardsOperation = "PreStakingBlockReward"
+	// collectRewardsOperation is the operation type for the block rewards in the staking era
+	collectRewardsOperation = "CollectRewards"
 )
 
 // supplyWorker satisfies the storage.BlockWorker interface for the supply parser
@@ -245,7 +250,8 @@ func (b *supplyWorker) AddingBlock(
 	}
 	seenAccInBlock := map[string]interface{}{}
 	gasFees, posAmtTxd, negAmtTxd := big.NewInt(0), big.NewInt(0), big.NewInt(0)
-	cxFundsReceived, cxFundsSent := big.NewInt(0), big.NewInt(0)
+	cxReceived, cxSent := big.NewInt(0), big.NewInt(0)
+	rewards, amountTransferred := big.NewInt(0), big.NewInt(0)
 
 	for _, tx := range block.Transactions {
 		if len(tx.Operations) == 0 {
@@ -255,41 +261,50 @@ func (b *supplyWorker) AddingBlock(
 			if _, ok := seenAccInBlock[op.Account.Address]; !ok {
 				seenAccInBlock[op.Account.Address] = struct{}{}
 			}
-			//if _, ok := b.seenAccounts[op.Account.Address]; !ok {
-			//	b.seenAccounts[op.Account.Address] = struct{}{}
-			//}
+			if _, ok := b.seenAccounts[op.Account.Address]; !ok {
+				b.seenAccounts[op.Account.Address] = struct{}{}
+			}
 			amount, err := types.AmountValue(op.Amount)
 			if err != nil {
 				return nil, err
 			}
 			if amount.Sign() == -1 {
 				negAmtTxd = new(big.Int).Add(new(big.Int).Abs(amount), negAmtTxd)
-				if op.Type == crossShardTransferOperation {
-					cxFundsSent = new(big.Int).Add(new(big.Int).Abs(amount), cxFundsSent)
-				}
-				if op.Type == expendGasOperation {
+				switch op.Type {
+				case crossShardTransferOperation:
+					cxSent = new(big.Int).Add(new(big.Int).Abs(amount), cxSent)
+				case expendGasOperation:
 					gasFees = new(big.Int).Add(new(big.Int).Abs(amount), gasFees)
+				default:
+					amountTransferred = new(big.Int).Add(new(big.Int).Abs(amount), amountTransferred)
 				}
 			} else if amount.Sign() == 1 {
 				posAmtTxd = new(big.Int).Add(amount, posAmtTxd)
-				if op.Type == crossShardTransferOperation {
-					cxFundsReceived = new(big.Int).Add(new(big.Int).Abs(amount), cxFundsReceived)
+				switch op.Type {
+				case crossShardTransferOperation:
+					cxReceived = new(big.Int).Add(new(big.Int).Abs(amount), cxReceived)
+				case preStakingBlockRewardsOperation:
+					rewards = new(big.Int).Add(new(big.Int).Abs(amount), rewards)
+				case collectRewardsOperation:
+					rewards = new(big.Int).Add(new(big.Int).Abs(amount), rewards)
 				}
 			}
 		}
 	}
 
-	currResult.Rewards = new(big.Int).Sub(posAmtTxd, new(big.Int).Add(negAmtTxd, cxFundsReceived))
-	b.rewardsSoFarCtr.Add(currResult.Rewards)
-	b.supplySoFarCtr.Add(posAmtTxd)
-	currResult.CxSent = cxFundsSent
-	currResult.CxReceived = cxFundsReceived
+	b.rewardsSoFarCtr.Add(rewards)
+	b.supplySoFarCtr.Add(new(big.Int).Sub(posAmtTxd, negAmtTxd))
+	currResult.TotalAmountCredited = posAmtTxd
+	currResult.TotalAmountDeducted = negAmtTxd
+	currResult.Rewards = rewards
+	currResult.AmountTransferred = amountTransferred
+	currResult.CxSent = cxSent
+	currResult.CxReceived = cxReceived
 	currResult.GasFees = gasFees
-	currResult.AmountTransferred = negAmtTxd
 	currResult.NumOfAccounts = big.NewInt(int64(len(seenAccInBlock)))
-	//currResult.NumOfUniqueAccountsSoFar = big.NewInt(int64(len(b.seenAccounts)))
-	currResult.RewardsSoFar = b.rewardsSoFarCtr.Count
-	currResult.CirculatingSupplySoFar = b.supplySoFarCtr.Count
+	currResult.NumOfUniqueAccountsSoFar = big.NewInt(int64(len(b.seenAccounts)))
+	currResult.RewardsSoFar = b.rewardsSoFarCtr.GetCount()
+	currResult.CirculatingSupplySoFar = b.supplySoFarCtr.GetCount()
 	if err := b.periodicFileLogger.Log(currResult); err != nil {
 		return nil, err
 	}
@@ -391,8 +406,8 @@ func newSupplyWorker(
 		interval:        parseInterval,
 		seenFinalBlocks: seenFinalBlocks,
 		seenAccounts:    map[string]interface{}{},
-		rewardsSoFarCtr: NewAtomicCounter(context.Background()),
-		supplySoFarCtr:  NewAtomicCounter(context.Background()),
+		rewardsSoFarCtr: NewThreadSafeCounter(),
+		supplySoFarCtr:  NewThreadSafeCounter(),
 		fetcher:         fetcher,
 		network:         network,
 		LatestResult:    &results.Supply{},

@@ -31,13 +31,13 @@ type PeriodicFileLogger struct {
 
 // Log a JSON marshallable struct to one line on a file (periodically)
 func (l *PeriodicFileLogger) Log(dat interface{}) error {
+	l.bufferMutex.Lock()
+	defer l.bufferMutex.Unlock()
 	str, err := json.Marshal(dat)
 	if err != nil {
 		return err
 	}
 
-	l.bufferMutex.Lock()
-	defer l.bufferMutex.Unlock()
 	l.buffer = append(l.buffer, string(str))
 	return nil
 }
@@ -120,30 +120,24 @@ func NewPeriodicFileLogger(filePath string, period time.Duration) *PeriodicFileL
 
 // ThreadSafeCounter thread safe Count
 type ThreadSafeCounter struct {
-	counterChan chan *big.Int
-	Count       *big.Int
-}
-
-func (c *ThreadSafeCounter) countLoop(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case val := <-c.counterChan:
-			c.Count = new(big.Int).Add(c.Count, val)
-		}
-	}
+	countMutex sync.Mutex
+	count      *big.Int
 }
 
 func (c *ThreadSafeCounter) Add(val *big.Int) {
-	c.counterChan <- val
+	c.countMutex.Lock()
+	defer c.countMutex.Unlock()
+	c.count = new(big.Int).Add(c.count, val)
 }
 
-func NewAtomicCounter(ctx context.Context) *ThreadSafeCounter {
-	ctr := &ThreadSafeCounter{
-		counterChan: make(chan *big.Int),
-		Count:       new(big.Int),
+func (c *ThreadSafeCounter) GetCount() *big.Int {
+	c.countMutex.Lock()
+	defer c.countMutex.Unlock()
+	return c.count
+}
+
+func NewThreadSafeCounter() *ThreadSafeCounter {
+	return &ThreadSafeCounter{
+		count: new(big.Int),
 	}
-	go ctr.countLoop(ctx)
-	return ctr
 }
