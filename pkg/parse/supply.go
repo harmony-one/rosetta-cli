@@ -107,19 +107,26 @@ func (t *SupplyParser) WatchEndConditions(
 	//)
 	tc := time.NewTicker(DoneCheckPeriod)
 	defer tc.Stop()
+
+	done := func() error {
+		time.Sleep(10 * time.Second) // Arb amount of time
+		fmt.Printf("Total (Final) Block Rewards: %v\n", t.blockWorker.rewardsSoFarCtr.Count)
+		fmt.Printf("Total (Final) Circulating Supply: %v\n", t.blockWorker.supplySoFarCtr.Count)
+		fmt.Printf("--- DONE ---\n")
+		return nil
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			if t.blockWorker.IsDone() {
-				fmt.Printf("--- DONE ---\n")
-				return nil
+				return done()
 			}
 			return ctx.Err()
 		case <-tc.C:
 			fmt.Printf(types.PrettyPrintStruct(t.blockWorker.LatestResult) + "\n")
 			if t.blockWorker.IsDone() {
-				fmt.Printf("--- DONE ---\n")
-				return nil
+				return done()
 			}
 		}
 	}
@@ -276,7 +283,9 @@ func (b *supplyWorker) AddingBlock(
 		if _, ok := b.seenFinalBlocks[block.BlockIdentifier.Index]; ok {
 			b.seenFinalBlocks[block.BlockIdentifier.Index] = true
 		}
-		b.LatestResult = currResult
+		if currResult.BlockID.Index > b.LatestResult.BlockID.Index {
+			b.LatestResult = currResult
+		}
 		transaction.Discard(ctx)
 		return nil
 	}, nil
