@@ -267,14 +267,14 @@ func (b *supplyWorker) AddingBlock(
 				if op.Type == crossShardTransferOperation {
 					cxFundsSent = new(big.Int).Add(new(big.Int).Abs(amount), cxFundsSent)
 				}
+				if op.Type == expendGasOperation {
+					gasFees = new(big.Int).Add(new(big.Int).Abs(amount), gasFees)
+				}
 			} else if amount.Sign() == 1 {
 				posAmtTxd = new(big.Int).Add(amount, posAmtTxd)
 				if op.Type == crossShardTransferOperation {
 					cxFundsReceived = new(big.Int).Add(new(big.Int).Abs(amount), cxFundsReceived)
 				}
-			}
-			if op.Type == expendGasOperation {
-				gasFees = new(big.Int).Add(new(big.Int).Abs(amount), gasFees)
 			}
 		}
 	}
