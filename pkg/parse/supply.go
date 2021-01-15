@@ -87,6 +87,9 @@ func (t *SupplyParser) StartPruning(
 }
 
 func (t *SupplyParser) PruneableIndex(ctx context.Context, headIndex int64) (int64, error) {
+	if t.blockWorker.LatestResult == nil || t.blockWorker.LatestResult.BlockID == nil {
+		return 0, nil
+	}
 	safestBlockToRemove := t.blockWorker.LatestResult.BlockID.Index - t.config.MaxSyncConcurrency
 	if safestBlockToRemove < 0 {
 		safestBlockToRemove = 0
@@ -283,7 +286,8 @@ func (b *supplyWorker) AddingBlock(
 		if _, ok := b.seenFinalBlocks[block.BlockIdentifier.Index]; ok {
 			b.seenFinalBlocks[block.BlockIdentifier.Index] = true
 		}
-		if currResult.BlockID.Index > b.LatestResult.BlockID.Index {
+		if b.LatestResult == nil || b.LatestResult.BlockID == nil ||
+			currResult.BlockID.Index > b.LatestResult.BlockID.Index {
 			b.LatestResult = currResult
 		}
 		transaction.Discard(ctx)
