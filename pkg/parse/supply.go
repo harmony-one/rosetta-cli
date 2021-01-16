@@ -133,6 +133,14 @@ func (t *SupplyParser) WatchEndConditions(
 	}
 }
 
+// HandleErr
+func (t *SupplyParser) HandleErr(err error) error {
+	if t.blockWorker.IsDone() {
+		return nil
+	}
+	return err
+}
+
 func InitializeSupplyParser(
 	ctx context.Context,
 	config *configuration.Configuration,
@@ -221,6 +229,8 @@ const (
 	preStakingBlockRewardsOperation = "PreStakingBlockReward"
 	// collectRewardsOperation is the operation type for the block rewards in the staking era
 	collectRewardsOperation = "CollectRewards"
+	// contractCreationOperation is the operation type for the contract creations on the Harmony network
+	contractCreationOperation = "ContractCreation"
 )
 
 // supplyWorker satisfies the storage.BlockWorker interface for the supply parser
@@ -250,6 +260,7 @@ func (b *supplyWorker) AddingBlock(
 	gasFees, posAmtTxd, negAmtTxd := big.NewInt(0), big.NewInt(0), big.NewInt(0)
 	cxReceived, cxSent := big.NewInt(0), big.NewInt(0)
 	rewards, amountTransferred := big.NewInt(0), big.NewInt(0)
+	numOfContractsCreated := big.NewInt(0)
 
 	for _, tx := range block.Transactions {
 		if len(tx.Operations) == 0 {
@@ -265,6 +276,9 @@ func (b *supplyWorker) AddingBlock(
 			amount, err := types.AmountValue(op.Amount)
 			if err != nil {
 				return nil, err
+			}
+			if op.Type == contractCreationOperation {
+				numOfContractsCreated = new(big.Int).Add(big.NewInt(1), numOfContractsCreated)
 			}
 			if amount.Sign() == -1 {
 				negAmtTxd = new(big.Int).Add(new(big.Int).Abs(amount), negAmtTxd)
@@ -301,6 +315,7 @@ func (b *supplyWorker) AddingBlock(
 	currResult.GasFees = gasFees
 	currResult.NumOfAccounts = big.NewInt(int64(len(seenAccInBlock)))
 	currResult.NumOfUniqueAccountsSoFar = big.NewInt(int64(len(b.seenAccounts)))
+	currResult.NumOfContractsCreated = numOfContractsCreated
 	currResult.RewardsSoFar = b.rewardsSoFarCtr.GetCount()
 	currResult.CirculatingSupplySoFar = b.supplySoFarCtr.GetCount()
 	if err := b.periodicFileLogger.Log(currResult); err != nil {

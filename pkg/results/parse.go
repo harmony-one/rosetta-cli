@@ -14,6 +14,7 @@ type Supply struct {
 	Rewards                  *big.Int               `json:"block_rewards"`
 	TotalAmountDeducted      *big.Int               `json:"total_amount_deducted_from_accounts"`
 	TotalAmountCredited      *big.Int               `json:"total_amount_credited_from_accounts"`
+	NumOfContractsCreated    *big.Int               `json:"number_of_contracts_created"`
 	NumOfTransactions        *big.Int               `json:"number_of_transactions"`
 	NumOfAccounts            *big.Int               `json:"number_of_accounts"`
 	AmountTransferred        *big.Int               `json:"amount_transferred"`

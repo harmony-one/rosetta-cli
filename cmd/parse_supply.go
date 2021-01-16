@@ -68,5 +68,5 @@ func runParseSupplyCmd(cmd *cobra.Command, args []string) error {
 	g.Go(func() error {
 		return supplyParser.WatchEndConditions(ctx)
 	})
-	return g.Wait()
+	return supplyParser.HandleErr(g.Wait())
 }
