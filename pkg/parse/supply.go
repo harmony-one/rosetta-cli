@@ -279,6 +279,7 @@ func (b *supplyWorker) AddingBlock(
 				case preStakingBlockRewardsOperation:
 					rewards = new(big.Int).Add(new(big.Int).Abs(amount), rewards)
 				case collectRewardsOperation:
+					fmt.Printf("triggered\n")
 					rewards = new(big.Int).Add(new(big.Int).Abs(amount), rewards)
 				}
 			}
