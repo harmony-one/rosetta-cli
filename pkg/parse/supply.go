@@ -87,8 +87,9 @@ func (t *SupplyParser) StartPruning(
 }
 
 func (t *SupplyParser) PruneableIndex(ctx context.Context, headIndex int64) (int64, error) {
-	safestBlockToRemove := headIndex - t.config.MaxSyncConcurrency
-	if safestBlockToRemove < 0 {
+	safestBlockToRemove := headIndex - t.config.MaxSyncConcurrency - int64(t.config.MaxReorgDepth)
+	oldestBlock, err := t.blockStorage.GetOldestBlockIndex(ctx)
+	if err != nil || safestBlockToRemove < 0 || safestBlockToRemove < oldestBlock {
 		safestBlockToRemove = 0
 	}
 	return safestBlockToRemove, nil
