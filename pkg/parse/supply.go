@@ -87,7 +87,11 @@ func (t *SupplyParser) StartPruning(
 }
 
 func (t *SupplyParser) PruneableIndex(ctx context.Context, headIndex int64) (int64, error) {
-	return headIndex - int64(t.config.MaxReorgDepth), nil
+	safestBlockToRemove := headIndex - t.config.MaxSyncConcurrency
+	if safestBlockToRemove < 0 {
+		safestBlockToRemove = 0
+	}
+	return safestBlockToRemove, nil
 }
 
 // WatchEndConditions starts go routines to watch the end conditions
