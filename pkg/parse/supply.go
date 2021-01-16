@@ -237,7 +237,6 @@ func (b *supplyWorker) AddingBlock(
 	block *types.Block,
 	transaction storage.DatabaseTransaction,
 ) (storage.CommitWorker, error) {
-	fmt.Printf("seen\n")
 	currResult := &results.Supply{
 		BlockID:           block.BlockIdentifier,
 		NumOfTransactions: big.NewInt(int64(len(block.Transactions))),
@@ -311,7 +310,6 @@ func (b *supplyWorker) AddingBlock(
 			currResult.BlockID.Index > b.LatestResult.BlockID.Index {
 			b.LatestResult = currResult
 		}
-		fmt.Printf("committed\n")
 		return nil
 	}, nil
 }
