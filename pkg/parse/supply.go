@@ -87,10 +87,7 @@ func (t *SupplyParser) StartPruning(
 }
 
 func (t *SupplyParser) PruneableIndex(ctx context.Context, headIndex int64) (int64, error) {
-	if t.blockWorker.LatestResult == nil || t.blockWorker.LatestResult.BlockID == nil {
-		return 0, nil
-	}
-	safestBlockToRemove := t.blockWorker.LatestResult.BlockID.Index - t.config.MaxSyncConcurrency
+	safestBlockToRemove := headIndex - t.config.MaxSyncConcurrency
 	if safestBlockToRemove < 0 {
 		safestBlockToRemove = 0
 	}
@@ -101,10 +98,10 @@ func (t *SupplyParser) PruneableIndex(ctx context.Context, headIndex int64) (int
 func (t *SupplyParser) WatchEndConditions(
 	ctx context.Context,
 ) error {
-	t.blockWorker.periodicFileLogger.StartFileLogger(context.Background())
+	t.blockWorker.periodicFileLogger.StartFileLogger(ctx)
 	defer t.blockWorker.periodicFileLogger.StopFileLogger()
 	t.blockWorker.periodicallySaveUniqueAccounts( // TODO: consider disabling this if causing problem...
-		context.Background(),
+		ctx,
 		30*time.Minute,
 		fmt.Sprintf("./parse_last_seen_accounts_<%v>", time.Now().String()), // TODO: take as config input
 	)
