@@ -9,6 +9,7 @@ import (
 // Supply is the result of the parse:supply command
 type Supply struct {
 	BlockID                  *types.BlockIdentifier `json:"block_identifier"`
+	BlockEpoch               *big.Int               `json:"block_epoch"`
 	RewardsSoFar             *big.Int               `json:"approx_block_rewards_so_far"`      // Approximate due to async
 	CirculatingSupplySoFar   *big.Int               `json:"approx_circulating_supply_so_far"` // Approximate due to async
 	Rewards                  *big.Int               `json:"block_rewards"`
