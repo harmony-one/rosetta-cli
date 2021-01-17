@@ -310,7 +310,7 @@ func (b *supplyWorker) AddingBlock(
 	currResult.TotalAmountDeducted = negAmtTxd
 	currResult.Rewards = rewards
 	if epoch, ok := block.Metadata["epoch"]; ok {
-		currResult.BlockEpoch = big.NewInt(epoch.(int64))
+		currResult.BlockEpoch = big.NewInt(int64(epoch.(float64)))
 	}
 	currResult.AmountTransferred = amountTransferred
 	currResult.CxSent = cxSent
