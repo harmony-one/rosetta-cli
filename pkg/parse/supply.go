@@ -247,6 +247,11 @@ type supplyWorker struct {
 }
 
 // AddingBlock is called by BlockStorage when adding a block to storage.
+//
+// WARNING: Assumes that all currency is ONLY in ONE (this does NOT include staked one, or
+// any special book-keeping currency for staked harmony tokens).
+// Therefore, logic for some of the parse data will have to be changed to account for any
+// changes to the core Harmony Rosetta implementation that tracks staked tokens.
 func (b *supplyWorker) AddingBlock(
 	ctx context.Context,
 	block *types.Block,
