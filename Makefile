@@ -20,7 +20,7 @@ deps:
 	go get ./...
 
 lint:
-	golangci-lint run -v \
+	golangci-lint run --timeout 2m0s -v \
 		-E golint,misspell,gocyclo,whitespace,goconst,gocritic,gocognit,bodyclose,unconvert,lll,unparam,gomnd;
 
 format:
@@ -29,7 +29,13 @@ format:
 check-format:
 	! gofmt -s -l . | read;
 
-test:
+validate-configuration-files:
+	go run main.go configuration:validate examples/configuration/simple.json;
+	go run main.go configuration:create examples/configuration/default.json;
+	go run main.go configuration:validate examples/configuration/default.json;
+	git diff --exit-code;
+
+test: | validate-configuration-files
 	${TEST_SCRIPT}
 
 test-cover:	
@@ -48,6 +54,9 @@ salus:
 	docker run --rm -t -v ${PWD}:/home/repo coinbase/salus
 
 release: add-license shorten-lines format test lint salus
+
+compile:
+	./scripts/compile.sh $(version)
 
 build:
 	go build ./...

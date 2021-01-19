@@ -15,238 +15,20 @@
 package configuration
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
-	"math/big"
-
-	"github.com/coinbase/rosetta-cli/pkg/scenario"
+	"path"
 
 	"github.com/coinbase/rosetta-sdk-go/asserter"
-	"github.com/coinbase/rosetta-sdk-go/storage"
+	"github.com/coinbase/rosetta-sdk-go/constructor/dsl"
+	"github.com/coinbase/rosetta-sdk-go/constructor/job"
 	"github.com/coinbase/rosetta-sdk-go/types"
 	"github.com/coinbase/rosetta-sdk-go/utils"
 	"github.com/fatih/color"
 )
-
-// AccountingModel is a type representing possible accounting models
-// in the Construction API.
-type AccountingModel string
-
-const (
-	// AccountModel is for account-based blockchains.
-	AccountModel AccountingModel = "account"
-
-	// UtxoModel is for UTXO-based blockchains.
-	UtxoModel AccountingModel = "utxo"
-)
-
-// CheckDataEndCondition is a type of "successful" end
-// for the "check:data" method.
-type CheckDataEndCondition string
-
-const (
-	// IndexEndCondition is used to indicate that the index end condition
-	// has been met.
-	IndexEndCondition CheckDataEndCondition = "Index End Condition"
-
-	// DurationEndCondition is used to indicate that the duration
-	// end condition has been met.
-	DurationEndCondition CheckDataEndCondition = "Duration End Condition"
-
-	// TipEndCondition is used to indicate that the tip end condition
-	// has been met.
-	TipEndCondition CheckDataEndCondition = "Tip End Condition"
-
-	// ReconciliationCoverageEndCondition is used to indicate that the reconciliation
-	// coverage end condition has been met.
-	ReconciliationCoverageEndCondition CheckDataEndCondition = "Reconciliation Coverage End Condition"
-)
-
-// Default Configuration Values
-const (
-	DefaultURL                               = "http://localhost:8080"
-	DefaultSyncConcurrency                   = 8
-	DefaultTransactionConcurrency            = 16
-	DefaultActiveReconciliationConcurrency   = 16
-	DefaultInactiveReconciliationConcurrency = 4
-	DefaultInactiveReconciliationFrequency   = 250
-	DefaultTimeout                           = 10
-	DefaultRetryElapsedTime                  = 60
-	DefaultConfirmationDepth                 = 10
-	DefaultStaleDepth                        = 30
-	DefaultBroadcastLimit                    = 3
-	DefaultTipDelay                          = 300
-	DefaultBlockBroadcastLimit               = 5
-	DefaultNewAccountProbability             = 0.5
-	DefaultMaxAddresses                      = 200
-
-	// ETH Defaults
-	EthereumIDBlockchain    = "Ethereum"
-	EthereumIDNetwork       = "Ropsten"
-	EthereumTransferType    = "transfer"
-	EthereumSymbol          = "ETH"
-	EthereumDecimals        = 18
-	EthereumMinimumBalance  = "0"
-	EthereumMaximumFee      = "5000000000000000" // 0.005 ETH
-	EthereumCurveType       = types.Secp256k1
-	EthereumAccountingModel = AccountModel
-)
-
-// Default Configuration Values
-var (
-	EthereumNetwork = &types.NetworkIdentifier{
-		Blockchain: EthereumIDBlockchain,
-		Network:    EthereumIDNetwork,
-	}
-	EthereumCurrency = &types.Currency{
-		Symbol:   EthereumSymbol,
-		Decimals: EthereumDecimals,
-	}
-	EthereumTransfer = []*types.Operation{
-		{
-			OperationIdentifier: &types.OperationIdentifier{
-				Index: 0,
-			},
-			Account: &types.AccountIdentifier{
-				Address: scenario.Sender,
-			},
-			Type: EthereumTransferType,
-			Amount: &types.Amount{
-				Value: scenario.SenderValue,
-			},
-		},
-		{
-			OperationIdentifier: &types.OperationIdentifier{
-				Index: 1,
-			},
-			RelatedOperations: []*types.OperationIdentifier{
-				{
-					Index: 0,
-				},
-			},
-			Account: &types.AccountIdentifier{
-				Address: scenario.Recipient,
-			},
-			Type: EthereumTransferType,
-			Amount: &types.Amount{
-				Value: scenario.RecipientValue,
-			},
-		},
-	}
-)
-
-// TODO: Add support for sophisticated end conditions
-// (https://github.com/coinbase/rosetta-cli/issues/66)
-
-// ConstructionConfiguration contains all configurations
-// to run check:construction.
-type ConstructionConfiguration struct {
-	// OfflineURL is the URL of a Rosetta API implementation in "offline mode".
-	OfflineURL string `json:"offline_url"`
-
-	// Currency is the *types.Currency to track and use for transactions.
-	Currency *types.Currency `json:"currency"`
-
-	// MinimumBalance is balance at a particular address
-	// that is not considered spendable.
-	MinimumBalance string `json:"minimum_balance"`
-
-	// MaximumFee is the maximum fee that could be used
-	// to send a transaction. The sendable balance
-	// of any address is calculated as balance - minimum_balance - maximum_fee.
-	MaximumFee string `json:"maximum_fee"`
-
-	// CurveType is the curve to use when generating a *keys.KeyPair.
-	CurveType types.CurveType `json:"curve_type"`
-
-	// AccountingModel is the type of acccount model to use for
-	// testing (account vs UTXO).
-	AccountingModel AccountingModel `json:"accounting_model"`
-
-	// Scenario contains a slice of operations that
-	// indicate how to construct a transaction on a blockchain. In the future
-	// this will be expanded to support all kinds of construction scenarios (like
-	// staking or governance).
-	Scenario []*types.Operation `json:"scenario"`
-
-	// ConfirmationDepth is the number of blocks that must be synced
-	// after a transaction before a transaction is confirmed.
-	//
-	// Note: Rosetta uses Bitcoin's definition of depth, so
-	// a transaction has depth 1 if it is in the head block.
-	// Source: https://en.bitcoin.it/wiki/Confirmation
-	ConfirmationDepth int64 `json:"confirmation_depth"`
-
-	// StaleDepth is the number of blocks to wait before attempting
-	// to rebroadcast after not finding a transaction on-chain.
-	StaleDepth int64 `json:"stale_depth"`
-
-	// BroadcastLimit is the number of times to attempt re-broadcast
-	// before giving up on a transaction broadcast.
-	BroadcastLimit int `json:"broadcast_limit"`
-
-	// IgnoreBroadcastFailures determines if we should exit when there
-	// are broadcast failures (that surpass the BroadcastLimit).
-	IgnoreBroadcastFailures bool `json:"ignore_broadcast_failures"`
-
-	// ChangeScenario is added to the scenario if it is possible to generate
-	// a change transaction where the recipient address is over
-	// the minimum balance. If this is left nil, no change
-	// will ever be created. This is ONLY used for UTXO-based
-	// testing.
-	ChangeScenario *types.Operation `json:"change_scenario"`
-
-	// ClearBroadcasts indicates if all pending broadcasts should
-	// be removed from BroadcastStorage on restart.
-	ClearBroadcasts bool `json:"clear_broadcasts"`
-
-	// BroadcastBehindTip indicates if we should broadcast transactions
-	// when we are behind tip (as defined by TipDelay).
-	BroadcastBehindTip bool `json:"broadcast_behind_tip"`
-
-	// BlockBroadcastLimit is the number of transactions to attempt
-	// broadcast in a single block. When there are many pending
-	// broadcasts, it may make sense to limit the number of broadcasts.
-	BlockBroadcastLimit int `json:"block_broadcast_limit"`
-
-	// RebroadcastAll indicates if all pending broadcasts should be
-	// rebroadcast from BroadcastStorage on restart.
-	RebroadcastAll bool `json:"rebroadcast_all"`
-
-	// NewAccountProbability is the probability we create a new
-	// recipient address on any transaction creation loop.
-	NewAccountProbability float64 `json:"new_account_probability"`
-
-	// MaxAddresses is the maximum number of addresses
-	// to generate while testing.
-	MaxAddresses int `json:"max_addresses"`
-
-	// PrefundedAccounts is an array of prefunded accounts
-	// to use while testing.
-	PrefundedAccounts []*storage.PrefundedAccount `json:"prefunded_accounts"`
-}
-
-// DefaultConstructionConfiguration returns the *ConstructionConfiguration
-// used for testing Ethereum transfers on Ropsten.
-func DefaultConstructionConfiguration() *ConstructionConfiguration {
-	return &ConstructionConfiguration{
-		OfflineURL:            DefaultURL,
-		Currency:              EthereumCurrency,
-		MinimumBalance:        EthereumMinimumBalance,
-		MaximumFee:            EthereumMaximumFee,
-		CurveType:             EthereumCurveType,
-		AccountingModel:       EthereumAccountingModel,
-		Scenario:              EthereumTransfer,
-		ConfirmationDepth:     DefaultConfirmationDepth,
-		StaleDepth:            DefaultStaleDepth,
-		BroadcastLimit:        DefaultBroadcastLimit,
-		BlockBroadcastLimit:   DefaultBlockBroadcastLimit,
-		NewAccountProbability: DefaultNewAccountProbability,
-		MaxAddresses:          DefaultMaxAddresses,
-	}
-}
 
 // DefaultDataConfiguration returns the default *DataConfiguration
 // for running `check:data`.
@@ -255,6 +37,7 @@ func DefaultDataConfiguration() *DataConfiguration {
 		ActiveReconciliationConcurrency:   DefaultActiveReconciliationConcurrency,
 		InactiveReconciliationConcurrency: DefaultInactiveReconciliationConcurrency,
 		InactiveReconciliationFrequency:   DefaultInactiveReconciliationFrequency,
+		StatusPort:                        DefaultStatusPort,
 	}
 }
 
@@ -263,209 +46,31 @@ func DefaultDataConfiguration() *DataConfiguration {
 // DefaultConstructionConfiguration and DefaultDataConfiguration.
 func DefaultConfiguration() *Configuration {
 	return &Configuration{
-		Network:                EthereumNetwork,
-		OnlineURL:              DefaultURL,
-		HTTPTimeout:            DefaultTimeout,
-		RetryElapsedTime:       DefaultRetryElapsedTime,
-		SyncConcurrency:        DefaultSyncConcurrency,
-		TransactionConcurrency: DefaultTransactionConcurrency,
-		TipDelay:               DefaultTipDelay,
-		Construction:           DefaultConstructionConfiguration(),
-		Data:                   DefaultDataConfiguration(),
+		Network:              EthereumNetwork,
+		OnlineURL:            DefaultURL,
+		MaxOnlineConnections: DefaultMaxOnlineConnections,
+		HTTPTimeout:          DefaultTimeout,
+		MaxRetries:           DefaultMaxRetries,
+		MaxSyncConcurrency:   DefaultMaxSyncConcurrency,
+		TipDelay:             DefaultTipDelay,
+		MaxReorgDepth:        DefaultMaxReorgDepth,
+		Data:                 DefaultDataConfiguration(),
 	}
-}
-
-// DataEndConditions contains all the conditions for the syncer to stop
-// when running check:data.
-// Only 1 end condition can be populated at once!
-type DataEndConditions struct {
-	// Index configures the syncer to stop once reaching a particular block height.
-	Index *int64 `json:"index,omitempty"`
-
-	// Tip configures the syncer to stop once it reached the tip.
-	// Make sure to configure `tip_delay` if you use this end
-	// condition.
-	Tip *bool `json:"tip,omitempty"`
-
-	// Duration configures the syncer to stop after running
-	// for Duration seconds.
-	Duration *uint64 `json:"duration,omitempty"`
-
-	// ReconciliationCoverage configures the syncer to stop
-	// once it has reached tip AND some proportion of
-	// all addresses have been reconciled at an index >=
-	// to when tip was first reached. The range of inputs
-	// for this condition are [0.0, 1.0].
-	ReconciliationCoverage *float64 `json:"reconciliation_coverage,omitempty"`
-}
-
-// DataConfiguration contains all configurations to run check:data.
-type DataConfiguration struct {
-	// ActiveReconciliationConcurrency is the concurrency to use while fetching accounts
-	// during active reconciliation.
-	ActiveReconciliationConcurrency uint64 `json:"active_reconciliation_concurrency"`
-
-	// InactiveReconciliationConcurrency is the concurrency to use while fetching accounts
-	// during inactive reconciliation.
-	InactiveReconciliationConcurrency uint64 `json:"inactive_reconciliation_concurrency"`
-
-	// InactiveReconciliationFrequency is the number of blocks to wait between
-	// inactive reconiliations on each account.
-	InactiveReconciliationFrequency uint64 `json:"inactive_reconciliation_frequency"`
-
-	// LogBlocks is a boolean indicating whether to log processed blocks.
-	LogBlocks bool `json:"log_blocks"`
-
-	// LogTransactions is a boolean indicating whether to log processed transactions.
-	LogTransactions bool `json:"log_transactions"`
-
-	// LogBalanceChanges is a boolean indicating whether to log all balance changes.
-	LogBalanceChanges bool `json:"log_balance_changes"`
-
-	// LogReconciliations is a boolean indicating whether to log all reconciliations.
-	LogReconciliations bool `json:"log_reconciliations"`
-
-	// IgnoreReconciliationError determines if block processing should halt on a reconciliation
-	// error. It can be beneficial to collect all reconciliation errors or silence
-	// reconciliation errors during development.
-	IgnoreReconciliationError bool `json:"ignore_reconciliation_error"`
-
-	// ExemptAccounts is a path to a file listing all accounts to exempt from balance
-	// tracking and reconciliation. Look at the examples directory for an example of
-	// how to structure this file.
-	ExemptAccounts string `json:"exempt_accounts"`
-
-	// BootstrapBalances is a path to a file used to bootstrap balances
-	// before starting syncing. If this value is populated after beginning syncing,
-	// it will be ignored.
-	BootstrapBalances string `json:"bootstrap_balances"`
-
-	// HistoricalBalanceDisabled is a boolean that dictates how balance lookup is performed.
-	// When set to true, balances are looked up at the block where a balance
-	// change occurred instead of at the current block. Blockchains that do not support
-	// historical balance lookup should set this to false.
-	HistoricalBalanceDisabled bool `json:"historical_balance_disabled"`
-
-	// InterestingAccounts is a path to a file listing all accounts to check on each block. Look
-	// at the examples directory for an example of how to structure this file.
-	InterestingAccounts string `json:"interesting_accounts"`
-
-	// ReconciliationDisabled is a boolean that indicates reconciliation should not
-	// be attempted. When first testing an implementation, it can be useful to disable
-	// some of the more advanced checks to confirm syncing is working as expected.
-	ReconciliationDisabled bool `json:"reconciliation_disabled"`
-
-	// InactiveDiscrepencySearchDisabled is a boolean indicating if a search
-	// should be performed to find any inactive reconciliation discrepencies.
-	// Note, a search will never be performed if historical balance lookup
-	// is disabled.
-	InactiveDiscrepencySearchDisabled bool `json:"inactive_discrepency_search_disabled"`
-
-	// BalanceTrackingDisabled is a boolean that indicates balances calculation
-	// should not be attempted. When first testing an implemenation, it can be
-	// useful to just try to fetch all blocks before checking for balance
-	// consistency.
-	BalanceTrackingDisabled bool `json:"balance_tracking_disabled"`
-
-	// CoinTrackingDisabled is a boolean that indicates coin (or UTXO) tracking
-	// should not be attempted. When first testing an implemenation, it can be
-	// useful to just try to fetch all blocks before checking for coin
-	// consistency.
-	CoinTrackingDisabled bool `json:"coin_tracking_disabled"`
-
-	// StartIndex is the block height to start syncing from. If no StartIndex
-	// is provided, syncing will start from the last saved block.
-	// If no blocks have ever been synced, syncing will start from genesis.
-	StartIndex *int64 `json:"start_index,omitempty"`
-
-	// EndCondition contains the conditions for the syncer to stop
-	EndConditions *DataEndConditions `json:"end_conditions,omitempty"`
-
-	// ResultsOutputFile is the absolute filepath of where to save
-	// the results of a check:data run.
-	ResultsOutputFile string `json:"results_output_file"`
-}
-
-// Configuration contains all configuration settings for running
-// check:data or check:construction.
-type Configuration struct {
-	// Network is the *types.NetworkIdentifier where transactions should
-	// be constructed and where blocks should be synced to monitor
-	// for broadcast success.
-	Network *types.NetworkIdentifier `json:"network"`
-
-	// OnlineURL is the URL of a Rosetta API implementation in "online mode".
-	OnlineURL string `json:"online_url"`
-
-	// DataDirectory is a folder used to store logs and any data used to perform validation.
-	DataDirectory string `json:"data_directory"`
-
-	// HTTPTimeout is the timeout for a HTTP request in seconds.
-	HTTPTimeout uint64 `json:"http_timeout"`
-
-	// RetryElapsedTime is the total time to spend retrying a HTTP request in seconds.
-	RetryElapsedTime uint64 `json:"retry_elapsed_time"`
-
-	// SyncConcurrency is the concurrency to use while syncing blocks.
-	SyncConcurrency uint64 `json:"sync_concurrency"`
-
-	// TransactionConcurrency is the concurrency to use while fetching transactions (if required).
-	TransactionConcurrency uint64 `json:"transaction_concurrency"`
-
-	// TipDelay dictates how many seconds behind the current time is considered
-	// tip. If we are > TipDelay seconds from the last processed block,
-	// we are considered to be behind tip.
-	TipDelay int64 `json:"tip_delay"`
-
-	// DisableMemoryLimit uses a performance-optimized database mode
-	// that uses more memory.
-	DisableMemoryLimit bool `json:"disable_memory_limit"`
-
-	// LogConfiguration determines if the configuration settings
-	// should be printed to the console when a file is loaded.
-	LogConfiguration bool `json:"log_configuration"`
-
-	Construction *ConstructionConfiguration `json:"construction"`
-	Data         *DataConfiguration         `json:"data"`
 }
 
 func populateConstructionMissingFields(
 	constructionConfig *ConstructionConfiguration,
 ) *ConstructionConfiguration {
 	if constructionConfig == nil {
-		return DefaultConstructionConfiguration()
+		return nil
 	}
 
 	if len(constructionConfig.OfflineURL) == 0 {
 		constructionConfig.OfflineURL = DefaultURL
 	}
 
-	if constructionConfig.Currency == nil {
-		constructionConfig.Currency = EthereumCurrency
-	}
-
-	if len(constructionConfig.MinimumBalance) == 0 {
-		constructionConfig.MinimumBalance = EthereumMinimumBalance
-	}
-
-	if len(constructionConfig.MaximumFee) == 0 {
-		constructionConfig.MaximumFee = EthereumMaximumFee
-	}
-
-	if len(constructionConfig.CurveType) == 0 {
-		constructionConfig.CurveType = EthereumCurveType
-	}
-
-	if len(constructionConfig.AccountingModel) == 0 {
-		constructionConfig.AccountingModel = EthereumAccountingModel
-	}
-
-	if len(constructionConfig.Scenario) == 0 {
-		constructionConfig.Scenario = EthereumTransfer
-	}
-
-	if constructionConfig.ConfirmationDepth == 0 {
-		constructionConfig.ConfirmationDepth = DefaultConfirmationDepth
+	if constructionConfig.MaxOfflineConnections == 0 {
+		constructionConfig.MaxOfflineConnections = DefaultMaxOfflineConnections
 	}
 
 	if constructionConfig.StaleDepth == 0 {
@@ -480,12 +85,8 @@ func populateConstructionMissingFields(
 		constructionConfig.BlockBroadcastLimit = DefaultBlockBroadcastLimit
 	}
 
-	if constructionConfig.NewAccountProbability == 0 {
-		constructionConfig.NewAccountProbability = DefaultNewAccountProbability
-	}
-
-	if constructionConfig.MaxAddresses == 0 {
-		constructionConfig.MaxAddresses = DefaultMaxAddresses
+	if constructionConfig.StatusPort == 0 {
+		constructionConfig.StatusPort = DefaultStatusPort
 	}
 
 	return constructionConfig
@@ -508,6 +109,10 @@ func populateDataMissingFields(dataConfig *DataConfiguration) *DataConfiguration
 		dataConfig.InactiveReconciliationFrequency = DefaultInactiveReconciliationFrequency
 	}
 
+	if dataConfig.StatusPort == 0 {
+		dataConfig.StatusPort = DefaultStatusPort
+	}
+
 	return dataConfig
 }
 
@@ -528,20 +133,24 @@ func populateMissingFields(config *Configuration) *Configuration {
 		config.HTTPTimeout = DefaultTimeout
 	}
 
-	if config.RetryElapsedTime == 0 {
-		config.RetryElapsedTime = DefaultRetryElapsedTime
+	if config.MaxRetries == 0 {
+		config.MaxRetries = DefaultMaxRetries
 	}
 
-	if config.SyncConcurrency == 0 {
-		config.SyncConcurrency = DefaultSyncConcurrency
+	if config.MaxOnlineConnections == 0 {
+		config.MaxOnlineConnections = DefaultMaxOnlineConnections
 	}
 
-	if config.TransactionConcurrency == 0 {
-		config.TransactionConcurrency = DefaultTransactionConcurrency
+	if config.MaxSyncConcurrency == 0 {
+		config.MaxSyncConcurrency = DefaultMaxSyncConcurrency
 	}
 
 	if config.TipDelay == 0 {
 		config.TipDelay = DefaultTipDelay
+	}
+
+	if config.MaxReorgDepth == 0 {
+		config.MaxReorgDepth = DefaultMaxReorgDepth
 	}
 
 	config.Construction = populateConstructionMissingFields(config.Construction)
@@ -550,59 +159,68 @@ func populateMissingFields(config *Configuration) *Configuration {
 	return config
 }
 
-func checkStringUint(input string) error {
-	val, ok := new(big.Int).SetString(input, 10)
-	if !ok {
-		return fmt.Errorf("%s is not an integer", input)
+func assertConstructionConfiguration(ctx context.Context, config *ConstructionConfiguration) error {
+	if config == nil {
+		return nil
 	}
 
-	if val.Sign() == -1 {
-		return fmt.Errorf("%s must not be negative", input)
+	if len(config.Workflows) > 0 && len(config.ConstructorDSLFile) > 0 {
+		return errors.New("cannot populate both workflows and DSL file path")
 	}
 
-	return nil
-}
-
-func assertConstructionConfiguration(config *ConstructionConfiguration) error {
-	// TODO: add asserter.Currency method
-	if err := asserter.Amount(&types.Amount{Value: "0", Currency: config.Currency}); err != nil {
-		return fmt.Errorf("%w: invalid currency", err)
+	if len(config.Workflows) == 0 && len(config.ConstructorDSLFile) == 0 {
+		return errors.New("both workflows and DSL file path are empty")
 	}
 
-	switch config.AccountingModel {
-	case AccountModel, UtxoModel:
-	default:
-		return fmt.Errorf("accounting model %s not supported", config.AccountingModel)
+	// Compile ConstructorDSLFile and save to Workflows
+	if len(config.ConstructorDSLFile) > 0 {
+		compiledWorkflows, err := dsl.Parse(ctx, config.ConstructorDSLFile)
+		if err != nil {
+			err.Log()
+			return fmt.Errorf("%w: compilation failed", err.Err)
+		}
+
+		config.Workflows = compiledWorkflows
 	}
 
-	if err := asserter.CurveType(config.CurveType); err != nil {
-		return fmt.Errorf("%w: invalid curve type", err)
-	}
-
-	if err := checkStringUint(config.MinimumBalance); err != nil {
-		return fmt.Errorf("%w: invalid value for MinimumBalance", err)
-	}
-
-	if err := checkStringUint(config.MaximumFee); err != nil {
-		return fmt.Errorf("%w: invalid value for MaximumFee", err)
+	// Parse provided Workflows
+	for _, workflow := range config.Workflows {
+		if workflow.Name == string(job.CreateAccount) || workflow.Name == string(job.RequestFunds) {
+			if workflow.Concurrency != job.ReservedWorkflowConcurrency {
+				return fmt.Errorf(
+					"reserved workflow %s must have concurrency %d",
+					workflow.Name,
+					job.ReservedWorkflowConcurrency,
+				)
+			}
+		}
 	}
 
 	for _, account := range config.PrefundedAccounts {
 		// Checks that privkey is hex encoded
 		_, err := hex.DecodeString(account.PrivateKeyHex)
 		if err != nil {
-			return fmt.Errorf("%s is not hex encoded", account.PrivateKeyHex)
+			return fmt.Errorf(
+				"%w: private key %s is not hex encoded for prefunded account",
+				err,
+				account.PrivateKeyHex,
+			)
 		}
 
-		// Checks if valid curvetype
-		err = asserter.CurveType(account.CurveType)
+		// Checks if valid CurveType
+		if err := asserter.CurveType(account.CurveType); err != nil {
+			return fmt.Errorf("%w: invalid CurveType for prefunded account", err)
+		}
+
+		// Checks if valid AccountIdentifier
+		if err := asserter.AccountIdentifier(account.AccountIdentifier); err != nil {
+			return fmt.Errorf("Account.Address is missing for prefunded account")
+		}
+
+		// Check if valid Currency
+		err = asserter.Currency(account.Currency)
 		if err != nil {
-			return fmt.Errorf("invalid CurveType %s", err)
-		}
-
-		// Checks if address is not empty string
-		if account.Address == "" {
-			return fmt.Errorf("Account.Address is missing")
+			return fmt.Errorf("%w: invalid currency for prefunded account", err)
 		}
 	}
 
@@ -625,9 +243,22 @@ func assertDataConfiguration(config *DataConfiguration) error {
 	}
 
 	if config.EndConditions.ReconciliationCoverage != nil {
-		coverage := *config.EndConditions.ReconciliationCoverage
+		coverage := config.EndConditions.ReconciliationCoverage.Coverage
 		if coverage < 0 || coverage > 1 {
 			return fmt.Errorf("reconciliation coverage %f must be [0.0,1.0]", coverage)
+		}
+
+		index := config.EndConditions.ReconciliationCoverage.Index
+		if index != nil && *index < 0 {
+			return fmt.Errorf("reconciliation coverage height %d must be >= 0", *index)
+		}
+
+		accountCount := config.EndConditions.ReconciliationCoverage.AccountCount
+		if accountCount != nil && *accountCount < 0 {
+			return fmt.Errorf(
+				"reconciliation coverage account count %d must be >= 0",
+				*accountCount,
+			)
 		}
 
 		if config.BalanceTrackingDisabled {
@@ -652,7 +283,7 @@ func assertDataConfiguration(config *DataConfiguration) error {
 	return nil
 }
 
-func assertConfiguration(config *Configuration) error {
+func assertConfiguration(ctx context.Context, config *Configuration) error {
 	if err := asserter.NetworkIdentifier(config.Network); err != nil {
 		return fmt.Errorf("%w: invalid network identifier", err)
 	}
@@ -661,16 +292,41 @@ func assertConfiguration(config *Configuration) error {
 		return fmt.Errorf("%w: invalid data configuration", err)
 	}
 
-	if err := assertConstructionConfiguration(config.Construction); err != nil {
+	if err := assertConstructionConfiguration(ctx, config.Construction); err != nil {
 		return fmt.Errorf("%w: invalid construction configuration", err)
 	}
 
 	return nil
 }
 
+// modifyFilePaths modifies a collection of filepaths in a *Configuration
+// file to make them relative to the configuration file (this makes it a lot easier
+// to store all config-related files in the same directory and to run the rosetta-cli
+// from a different directory).
+func modifyFilePaths(config *Configuration, fileDir string) {
+	if config.Data != nil {
+		if len(config.Data.BootstrapBalances) > 0 {
+			config.Data.BootstrapBalances = path.Join(fileDir, config.Data.BootstrapBalances)
+		}
+
+		if len(config.Data.InterestingAccounts) > 0 {
+			config.Data.InterestingAccounts = path.Join(fileDir, config.Data.InterestingAccounts)
+		}
+	}
+
+	if config.Construction != nil {
+		if len(config.Construction.ConstructorDSLFile) > 0 {
+			config.Construction.ConstructorDSLFile = path.Join(
+				fileDir,
+				config.Construction.ConstructorDSLFile,
+			)
+		}
+	}
+}
+
 // LoadConfiguration returns a parsed and asserted Configuration for running
 // tests.
-func LoadConfiguration(filePath string) (*Configuration, error) {
+func LoadConfiguration(ctx context.Context, filePath string) (*Configuration, error) {
 	var configRaw Configuration
 	if err := utils.LoadAndParse(filePath, &configRaw); err != nil {
 		return nil, fmt.Errorf("%w: unable to open configuration file", err)
@@ -678,7 +334,12 @@ func LoadConfiguration(filePath string) (*Configuration, error) {
 
 	config := populateMissingFields(&configRaw)
 
-	if err := assertConfiguration(config); err != nil {
+	// Get the configuration file directory so we can load all files
+	// relative to the location of the configuration file.
+	fileDir := path.Dir(filePath)
+	modifyFilePaths(config, fileDir)
+
+	if err := assertConfiguration(ctx, config); err != nil {
 		return nil, fmt.Errorf("%w: invalid configuration", err)
 	}
 

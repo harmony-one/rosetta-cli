@@ -28,19 +28,16 @@ var _ storage.BroadcastStorageHelper = (*BroadcastStorageHelper)(nil)
 // BroadcastStorageHelper implements the storage.Helper
 // interface.
 type BroadcastStorageHelper struct {
-	network      *types.NetworkIdentifier
 	blockStorage *storage.BlockStorage
 	fetcher      *fetcher.Fetcher
 }
 
 // NewBroadcastStorageHelper returns a new BroadcastStorageHelper.
 func NewBroadcastStorageHelper(
-	network *types.NetworkIdentifier,
 	blockStorage *storage.BlockStorage,
 	fetcher *fetcher.Fetcher,
 ) *BroadcastStorageHelper {
 	return &BroadcastStorageHelper{
-		network:      network,
 		blockStorage: blockStorage,
 		fetcher:      fetcher,
 	}
@@ -92,15 +89,16 @@ func (h *BroadcastStorageHelper) FindTransaction(
 // and returns the *types.TransactionIdentifier returned by the implementation.
 func (h *BroadcastStorageHelper) BroadcastTransaction(
 	ctx context.Context,
+	networkIdentifier *types.NetworkIdentifier,
 	networkTransaction string,
 ) (*types.TransactionIdentifier, error) {
-	transactionIdentifier, _, err := h.fetcher.ConstructionSubmit(
+	transactionIdentifier, _, fetchErr := h.fetcher.ConstructionSubmit(
 		ctx,
-		h.network,
+		networkIdentifier,
 		networkTransaction,
 	)
-	if err != nil {
-		return nil, fmt.Errorf("%w: unable to broadcast transaction", err)
+	if fetchErr != nil {
+		return nil, fmt.Errorf("%w: unable to broadcast transaction", fetchErr.Err)
 	}
 
 	return transactionIdentifier, nil

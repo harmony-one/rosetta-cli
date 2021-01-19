@@ -20,6 +20,8 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"runtime"
+	"runtime/pprof"
 	"syscall"
 
 	"github.com/coinbase/rosetta-cli/configuration"
@@ -31,32 +33,130 @@ import (
 
 var (
 	rootCmd = &cobra.Command{
-		Use:   "rosetta-cli",
-		Short: "CLI for the Rosetta API",
+		Use:               "rosetta-cli",
+		Short:             "CLI for the Rosetta API",
+		PersistentPreRunE: rootPreRun,
 	}
 
 	configurationFile string
+	cpuProfile        string
+	memProfile        string
+	blockProfile      string
 
 	// Config is the populated *configuration.Configuration from
 	// the configurationFile. If none is provided, this is set
 	// to the default settings.
 	Config *configuration.Configuration
 
+	// Context is the context to use for this invocation of the cli.
+	Context context.Context
+
 	// SignalReceived is set to true when a signal causes us to exit. This makes
 	// determining the error message to show on exit much more easy.
 	SignalReceived = false
+
+	// cpuProfileCleanup is called after the root command is executed to
+	// cleanup a running cpu profile.
+	cpuProfileCleanup func()
+
+	// blockProfileCleanup is called after the root command is executed to
+	// cleanup a running block profile.
+	blockProfileCleanup func()
+
+	// OnlyChanges is a boolean indicating if only the balance changes should be
+	// logged to the console.
+	OnlyChanges bool
 )
+
+// rootPreRun is executed before the root command runs and sets up cpu
+// profiling.
+//
+// Bassed on https://golang.org/pkg/runtime/pprof/#hdr-Profiling_a_Go_program
+func rootPreRun(*cobra.Command, []string) error {
+	if cpuProfile != "" {
+		f, err := os.Create(cpuProfile)
+		if err != nil {
+			return fmt.Errorf("%w: unable to create CPU profile file", err)
+		}
+		if err := pprof.StartCPUProfile(f); err != nil {
+			if err := f.Close(); err != nil {
+				log.Printf("error while closing cpu profile file: %v\n", err)
+			}
+			return err
+		}
+
+		cpuProfileCleanup = func() {
+			pprof.StopCPUProfile()
+			if err := f.Close(); err != nil {
+				log.Printf("error while closing cpu profile file: %v\n", err)
+			}
+		}
+	}
+
+	if blockProfile != "" {
+		runtime.SetBlockProfileRate(1)
+		f, err := os.Create(blockProfile)
+		if err != nil {
+			return fmt.Errorf("%w: unable to create block profile file", err)
+		}
+
+		p := pprof.Lookup("block")
+		blockProfileCleanup = func() {
+			if err := p.WriteTo(f, 0); err != nil {
+				log.Printf("error while writing block profile file: %v\n", err)
+			}
+			if err := f.Close(); err != nil {
+				log.Printf("error while closing block profile file: %v\n", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// rootPostRun is executed after the root command runs and performs memory
+// profiling.
+func rootPostRun() {
+	if cpuProfileCleanup != nil {
+		cpuProfileCleanup()
+	}
+
+	if blockProfileCleanup != nil {
+		blockProfileCleanup()
+	}
+
+	if memProfile != "" {
+		f, err := os.Create(memProfile)
+		if err != nil {
+			log.Printf("error while creating mem-profile file: %v", err)
+			return
+		}
+
+		defer func() {
+			if err := f.Close(); err != nil {
+				log.Printf("error while closing mem-profile file: %v", err)
+			}
+		}()
+
+		runtime.GC()
+		if err := pprof.WriteHeapProfile(f); err != nil {
+			log.Printf("error while writing heap profile: %v", err)
+		}
+	}
+}
 
 // Execute handles all invocations of the
 // rosetta-cli cmd.
 func Execute() error {
+	defer rootPostRun()
 	return rootCmd.Execute()
 }
 
 func init() {
 	cobra.OnInitialize(initConfig)
 
-	rootCmd.PersistentFlags().StringVar(
+	rootFlags := rootCmd.PersistentFlags()
+	rootFlags.StringVar(
 		&configurationFile,
 		"configuration-file",
 		"",
@@ -66,6 +166,24 @@ with the defaults), run rosetta-cli configuration:create.
 
 Any fields not populated in the configuration file will be populated with
 default values.`,
+	)
+	rootFlags.StringVar(
+		&cpuProfile,
+		"cpu-profile",
+		"",
+		`Save the pprof cpu profile in the specified file`,
+	)
+	rootFlags.StringVar(
+		&memProfile,
+		"mem-profile",
+		"",
+		`Save the pprof mem profile in the specified file`,
+	)
+	rootFlags.StringVar(
+		&blockProfile,
+		"block-profile",
+		"",
+		`Save the pprof block profile in the specified file`,
 	)
 	rootCmd.AddCommand(versionCmd)
 
@@ -78,20 +196,31 @@ default values.`,
 	rootCmd.AddCommand(checkConstructionCmd)
 
 	// View Commands
+	viewBlockCmd.Flags().BoolVar(
+		&OnlyChanges,
+		"only-changes",
+		false,
+		`Only print balance changes for accounts in the block`,
+	)
 	rootCmd.AddCommand(viewBlockCmd)
 	rootCmd.AddCommand(viewAccountCmd)
 	rootCmd.AddCommand(viewNetworksCmd)
 
 	// Utils
 	rootCmd.AddCommand(utilsAsserterConfigurationCmd)
+	rootCmd.AddCommand(utilsTrainZstdCmd)
+
+	// Parse
+	rootCmd.AddCommand(parseSupplyCmd)
 }
 
 func initConfig() {
+	Context = context.Background()
 	var err error
 	if len(configurationFile) == 0 {
 		Config = configuration.DefaultConfiguration()
 	} else {
-		Config, err = configuration.LoadConfiguration(configurationFile)
+		Config, err = configuration.LoadConfiguration(Context, configurationFile)
 	}
 	if err != nil {
 		log.Fatalf("%s: unable to load configuration", err.Error())
@@ -114,14 +243,14 @@ func ensureDataDirectoryExists() {
 // handleSignals handles OS signals so we can ensure we close database
 // correctly. We call multiple sigListeners because we
 // may need to cancel more than 1 context.
-func handleSignals(listeners []context.CancelFunc) {
+func handleSignals(listeners *[]context.CancelFunc) {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-sigs
 		color.Red("Received signal: %s", sig)
 		SignalReceived = true
-		for _, listener := range listeners {
+		for _, listener := range *listeners {
 			listener()
 		}
 	}()
@@ -131,6 +260,6 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print rosetta-cli version",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("v0.4.2")
+		fmt.Println("v0.6.0")
 	},
 }

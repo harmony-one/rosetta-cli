@@ -15,12 +15,12 @@
 package cmd
 
 import (
-	"context"
-	"log"
+	"fmt"
 	"time"
 
 	"github.com/coinbase/rosetta-sdk-go/fetcher"
 	"github.com/coinbase/rosetta-sdk-go/utils"
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
 
@@ -36,33 +36,35 @@ have been added in an update instead of silently erroring.
 
 To use this command, simply provide an absolute path as the argument for where
 the configuration file should be saved (in JSON).`,
-		Run:  runCreateConfigurationCmd,
+		RunE: runCreateConfigurationCmd,
 		Args: cobra.ExactArgs(1),
 	}
 )
 
-func runCreateConfigurationCmd(cmd *cobra.Command, args []string) {
-	ctx := context.Background()
-
+func runCreateConfigurationCmd(cmd *cobra.Command, args []string) error {
 	// Create a new fetcher
 	newFetcher := fetcher.New(
 		Config.OnlineURL,
 		fetcher.WithRetryElapsedTime(time.Duration(Config.RetryElapsedTime)*time.Second),
 		fetcher.WithTimeout(time.Duration(Config.HTTPTimeout)*time.Second),
+		fetcher.WithMaxRetries(Config.MaxRetries),
 	)
 
 	// Initialize the fetcher's asserter
-	_, _, fetchErr := newFetcher.InitializeAsserter(ctx)
+	_, _, fetchErr := newFetcher.InitializeAsserter(Context, Config.Network)
 	if fetchErr != nil {
-		log.Fatalf("%s: failed to initialize asserter", fetchErr.Err.Error())
+		return fmt.Errorf("%w: failed to initialize asserter", fetchErr.Err)
 	}
 
 	configuration, err := newFetcher.Asserter.ClientConfiguration()
 	if err != nil {
-		log.Fatalf("%s: unable to generate spec", err.Error())
+		return fmt.Errorf("%w: unable to generate spec", err)
 	}
 
 	if err := utils.SerializeAndWrite(args[0], configuration); err != nil {
-		log.Fatalf("%s: unable to serialize asserter configuration", err.Error())
+		return fmt.Errorf("%w: unable to serialize asserter configuration", err)
 	}
+
+	color.Green("Configuration file saved!")
+	return nil
 }

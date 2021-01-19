@@ -29,8 +29,19 @@ Before diving into the CLI, we recommend taking a look at the Rosetta API Docs:
 * [Construction API](https://www.rosetta-api.org/docs/construction_api_introduction.html)
 
 ## Install
+To download a binary for the latest release, run:
 ```
-go get github.com/coinbase/rosetta-cli
+curl -sSfL https://raw.githubusercontent.com/coinbase/rosetta-cli/master/scripts/install.sh | sh -s
+```
+
+The binary will be installed inside the `./bin` directory (relative to where the install command was run).
+
+_Downloading binaries from the Github UI will cause permission errors on Mac._
+
+### Installing in Custom Location
+To download the binary into a specific directory, run:
+```
+curl -sSfL https://raw.githubusercontent.com/coinbase/rosetta-cli/master/scripts/install.sh | sh -s -- -b <relative directory>
 ```
 
 ## Usage
@@ -47,19 +58,23 @@ Available Commands:
   configuration:validate       Ensure a configuration file at the provided path is formatted correctly
   help                         Help about any command
   utils:asserter-configuration Generate a static configuration file for the Asserter
+  utils:train-zstd             Generate a zstd dictionary for enhanced compression performance
   version                      Print rosetta-cli version
-  view:account                 View an account balance
+  view:balance                 View an account balance
   view:block                   View a block
   view:networks                View all network statuses
 
 Flags:
+      --block-profile string        Save the pprof block profile in the specified file
       --configuration-file string   Configuration file that provides connection and test settings.
                                     If you would like to generate a starter configuration file (populated
                                     with the defaults), run rosetta-cli configuration:create.
 
                                     Any fields not populated in the configuration file will be populated with
                                     default values.
+      --cpu-profile string          Save the pprof cpu profile in the specified file
   -h, --help                        help for rosetta-cli
+      --mem-profile string          Save the pprof mem profile in the specified file
 
 Use "rosetta-cli [command] --help" for more information about a command.
 ```
@@ -68,12 +83,123 @@ Use "rosetta-cli [command] --help" for more information about a command.
 All `rosetta-cli` parameters are populated from a configuration file (`--configuration-file`)
 provided at runtime. If a configuration file is not provided, the default
 configuration is used. This default configuration can be viewed
-[here](examples/configuration/default.json).
+[here](examples/configuration/default.json). Note, there is no default
+configuration for running `check:construction` as this is very network-specific.
+You can view a full list of all configuration options [here](https://pkg.go.dev/github.com/coinbase/rosetta-cli/configuration).
 
 In the `examples/configuration` directory, you can find examples configuration
 files for running tests against a Bitcoin Rosetta implementation
-([config](examples/configuration/bitcoin.json)) and an Ethereum Rosetta
-implementation ([config](examples/configuration/ethereum.json)).
+([config](https://github.com/coinbase/rosetta-bitcoin/tree/master/rosetta-cli-conf)) and an Ethereum Rosetta
+implementation ([config](https://github.com/coinbase/rosetta-ethereum/tree/master/rosetta-cli-conf)).
+
+#### Writing check:construction Tests
+The new Construction API testing framework (first released in `rosetta-cli@v0.5.0`) uses
+a new design pattern to allow for complex transaction construction orchestration.
+You can read more about the design goals [here](https://community.rosetta-api.org/t/feedback-request-automated-construction-api-testing-improvements/146).
+
+Most teams write their Construction API tests using the
+[Rosetta Constructor DSL](https://github.com/coinbase/rosetta-sdk-go/tree/master/constructor/dsl).
+We have examples of a DSL files written for [UTXO-based chains](https://github.com/coinbase/rosetta-bitcoin/blob/master/rosetta-cli-conf/testnet/bitcoin.ros)
+and [account-based chains](https://github.com/coinbase/rosetta-ethereum/blob/master/rosetta-cli-conf/testnet/ethereum.ros).
+
+##### Terminology
+When first learning about a new topic, it is often useful to understand the
+hierarchy of concerns. In the automated Construction API tester, this
+"hierarchy" is as follows:
+```text
+Workflows -> Jobs
+  Scenarios
+    Actions
+```
+
+`Workflows` contain collections of `Scenarios` to execute. `Scenarios` are
+executed atomically in database transactions (rolled back if execution fails)
+and culminate in an optional broadcast. This means that a single `Workflow`
+could contain multiple broadcasts (which can be useful for orchestrating
+staking-related transactions that affect a single account).
+
+To perform a `Workflow`, we create a `Job`. This `Job` has a unique identifier
+and stores state for all `Scenarios` in the `Workflow`. State is shared across
+an entire `Job` so `Actions` in a `Scenario` can access the output of `Actions`
+in other `Scenarios`. The syntax for accessing this shared state can be found
+[here](https://github.com/tidwall/gjson/blob/master/SYNTAX.md).
+
+`Actions` are discrete operations that can be performed in the context of a
+`Scenario`.  A full list of all `Actions` that can be performed can be found
+[here](https://pkg.go.dev/github.com/coinbase/rosetta-sdk-go/constructor/job#ActionType).
+
+If you have suggestions for more actions, please
+[open an issue in `rosetta-sdk-go`](https://github.com/coinbase/rosetta-sdk-go/issues)!
+
+##### Workflows
+To use the automated Construction API tester (without prefunded accounts),
+you must implement 2 required `Workflows`:
+* `create_account`
+* `request_funds`
+
+_If you don't implement these 2 `Workflows`, processing could stall._
+
+Please note that `create_account` can contain a transaction broadcast if
+on-chain origination is required for new accounts on your blockchain.
+
+If you plan to run the automated Construction API tester in CI, you may wish to
+provide [`prefunded accounts`](https://pkg.go.dev/github.com/coinbase/rosetta-cli/configuration#ConstructionConfiguration)
+when running the tester (otherwise you would need to manually fund generated
+accounts).
+
+Optionally, you can also provide a `return_funds` workflow that will be invoked
+when exiting `check:construction`. This can be useful in CI when you want to return
+all funds to a single accout or faucet (instead of black-holing them in all the addresses
+created during testing).
+
+##### Broadcast Invocation
+If you'd like to broadcast a transaction at the end of a `Scenario`,
+you must populate the following fields:
+* `<scenario>.network`
+* `<scenario>.operations`
+* `<scenario>.confirmation_depth` (allows for stake-related transactions to complete before marking as a success)
+
+Optionally, you can populate the following field:
+* `<scenario>.preprocess_metadata`
+
+Once a transaction is confirmed on-chain (after the provided
+`<scenario>.confirmation_depth`, it is stored by the tester at
+`<scenario>.transaction` for access by other `Scenarios` in the same `Job`.
+
+##### Dry Runs
+In UTXO-based blockchains, it may be necessary to amend the `operations` stored
+in `<scenario>.operations` based on the `suggested_fee` returned in
+`/construction/metadata`. The automated Construction API tester supports
+running a "dry run" of a transaction broadcast if you set the follow field:
+* `<scenario>.dry_run = true`
+
+The suggested fee will then be stored as `<scenario>.suggested_fee` for use by
+other `Scenarios` in the same `Job`. You can find an example of this in the
+Bitcoin [config](examples/configuration/bitcoin.json).
+
+*If this field is not populated or set to `false`, the transaction
+will be constructed, signed, and broadcast.*
+
+#### End Conditions
+When running the `rosetta-cli` in a CI job, it is usually desired to exit
+when certain conditions are met (or before then with an exit code of 1). We
+provide this functionality through the use of "end conditions" which can be
+specified in your configuration file.
+
+##### check:data
+A full list of `check:data` end conditions can be found [here](https://pkg.go.dev/github.com/coinbase/rosetta-cli/configuration#DataEndConditions).
+If any end condition is satisifed, we will exit and output the
+results in `results_output_file` (if it is populated).
+
+##### check:construction
+The `check:construction` end condition is a map of
+workflow:count that indicates how many of each workflow
+should be performed before `check:construction` should stop.
+For example, `{"create_account": 5}` indicates that 5 `create_account`
+workflows should be performed before stopping.
+
+Unlike `check:data`, all `check:construction` end conditions
+must be satisifed before the `rosetta-cli` will exit.
 
 #### Disable Complex Checks
 If you are just getting started with your implementation, you may want
@@ -83,14 +209,10 @@ by the `/account/balance` endpoint?). Take a look at the
 [simple configuration](examples/configuration/simple.json) for an example of
 how to do this.
 
-#### Future Work
-In the near future, we will add support for providing complex exit conditions
-(i.e. did we reach tip? did we reconcile every account?) for both
-`check:construction` and `check:data` so that the `rosetta-cli`
-can be integrated into a CI flow. Currently, the only way to exit with a
-successful status in the `rosetta-cli` is to provide an `--end` flag
-when running `check:data` (returns 0 if no errors up to a block index
-are observed).
+#### Status Codes
+If there are no issues found while running `check`, it will exit with a `0` status code.
+If there are any issues, it will exit with a `1` status code. It can be useful
+to run this command as an integration test for any changes to your implementation.
 
 ### Commands
 #### version
@@ -104,12 +226,15 @@ Flags:
   -h, --help   help for version
 
 Global Flags:
+      --block-profile string        Save the pprof block profile in the specified file
       --configuration-file string   Configuration file that provides connection and test settings.
                                     If you would like to generate a starter configuration file (populated
                                     with the defaults), run rosetta-cli configuration:create.
 
                                     Any fields not populated in the configuration file will be populated with
                                     default values.
+      --cpu-profile string          Save the pprof cpu profile in the specified file
+      --mem-profile string          Save the pprof mem profile in the specified file
 ```
 
 #### check:data
@@ -122,15 +247,15 @@ computed balance changes are equal to balance changes reported by the node.
 When re-running this command, it will start where it left off if you specify
 some data directory. Otherwise, it will create a new temporary directory and start
 again from the genesis block. If you want to discard some number of blocks
-populate the --start flag with some block index. Starting from a given index
-can be useful to debug a small range of blocks for issues but it is highly
-recommended you sync from start to finish to ensure all correctness checks
-are performed.
+populate the start_index filed in the configuration file with some block index.
+Starting from a given index can be useful to debug a small range of blocks for
+issues but it is highly recommended you sync from start to finish to ensure
+all correctness checks are performed.
 
 By default, account balances are looked up at specific heights (instead of
-only at the current block). If your node does not support this functionality
-set historical balance disabled to true. This will make reconciliation much
-less efficient but it will still work.
+only at the current block). If your node does not support this functionality,
+you can disable historical balance lookups in your configuration file. This will
+make reconciliation much less efficient but it will still work.
 
 If check fails due to an INACTIVE reconciliation error (balance changed without
 any corresponding operation), the cli will automatically try to find the block
@@ -156,18 +281,16 @@ Flags:
   -h, --help   help for check:data
 
 Global Flags:
+      --block-profile string        Save the pprof block profile in the specified file
       --configuration-file string   Configuration file that provides connection and test settings.
                                     If you would like to generate a starter configuration file (populated
                                     with the defaults), run rosetta-cli configuration:create.
 
                                     Any fields not populated in the configuration file will be populated with
                                     default values.
+      --cpu-profile string          Save the pprof cpu profile in the specified file
+      --mem-profile string          Save the pprof mem profile in the specified file
 ```
-
-##### Status Codes
-If there are no issues found while running `check`, it will exit with a `0` status code.
-If there are any issues, it will exit with a `1` status code. It can be useful
-to run this command as an integration test for any changes to your implementation.
 
 #### check:construction
 ```
@@ -195,12 +318,15 @@ Flags:
   -h, --help   help for check:construction
 
 Global Flags:
+      --block-profile string        Save the pprof block profile in the specified file
       --configuration-file string   Configuration file that provides connection and test settings.
                                     If you would like to generate a starter configuration file (populated
                                     with the defaults), run rosetta-cli configuration:create.
 
                                     Any fields not populated in the configuration file will be populated with
                                     default values.
+      --cpu-profile string          Save the pprof cpu profile in the specified file
+      --mem-profile string          Save the pprof mem profile in the specified file
 ```
 
 #### configuration:create
@@ -214,12 +340,15 @@ Flags:
   -h, --help   help for configuration:create
 
 Global Flags:
+      --block-profile string        Save the pprof block profile in the specified file
       --configuration-file string   Configuration file that provides connection and test settings.
                                     If you would like to generate a starter configuration file (populated
                                     with the defaults), run rosetta-cli configuration:create.
 
                                     Any fields not populated in the configuration file will be populated with
                                     default values.
+      --cpu-profile string          Save the pprof cpu profile in the specified file
+      --mem-profile string          Save the pprof mem profile in the specified file
 ```
 
 #### configuration:validate
@@ -257,38 +386,44 @@ Flags:
   -h, --help   help for view:networks
 
 Global Flags:
+      --block-profile string        Save the pprof block profile in the specified file
       --configuration-file string   Configuration file that provides connection and test settings.
                                     If you would like to generate a starter configuration file (populated
                                     with the defaults), run rosetta-cli configuration:create.
 
                                     Any fields not populated in the configuration file will be populated with
                                     default values.
+      --cpu-profile string          Save the pprof cpu profile in the specified file
+      --mem-profile string          Save the pprof mem profile in the specified file
 ```
 
-#### view:account
+#### view:balance
 ```
 While debugging, it is often useful to inspect the state
 of an account at a certain block. This command allows you to look up
 any account by providing a JSON representation of a types.AccountIdentifier
 (and optionally a height to perform the query).
 
-For example, you could run view:account '{"address":"interesting address"}' 1000
+For example, you could run view:balance '{"address":"interesting address"}' 1000
 to lookup the balance of an interesting address at block 1000. Allowing the
 address to specified as JSON allows for querying by SubAccountIdentifier.
 
 Usage:
-  rosetta-cli view:account [flags]
+  rosetta-cli view:balance [flags]
 
 Flags:
-  -h, --help   help for view:account
+  -h, --help   help for view:balance
 
 Global Flags:
+      --block-profile string        Save the pprof block profile in the specified file
       --configuration-file string   Configuration file that provides connection and test settings.
                                     If you would like to generate a starter configuration file (populated
                                     with the defaults), run rosetta-cli configuration:create.
 
                                     Any fields not populated in the configuration file will be populated with
                                     default values.
+      --cpu-profile string          Save the pprof cpu profile in the specified file
+      --mem-profile string          Save the pprof mem profile in the specified file
 ```
 
 #### view:block
@@ -307,15 +442,19 @@ Usage:
   rosetta-cli view:block [flags]
 
 Flags:
-  -h, --help   help for view:block
+  -h, --help           help for view:block
+      --only-changes   Only print balance changes for accounts in the block
 
 Global Flags:
+      --block-profile string        Save the pprof block profile in the specified file
       --configuration-file string   Configuration file that provides connection and test settings.
                                     If you would like to generate a starter configuration file (populated
                                     with the defaults), run rosetta-cli configuration:create.
 
                                     Any fields not populated in the configuration file will be populated with
                                     default values.
+      --cpu-profile string          Save the pprof cpu profile in the specified file
+      --mem-profile string          Save the pprof mem profile in the specified file
 ```
 
 #### utils:asserter-configuration
@@ -336,36 +475,47 @@ Flags:
   -h, --help   help for utils:asserter-configuration
 
 Global Flags:
+      --block-profile string        Save the pprof block profile in the specified file
       --configuration-file string   Configuration file that provides connection and test settings.
                                     If you would like to generate a starter configuration file (populated
                                     with the defaults), run rosetta-cli configuration:create.
 
                                     Any fields not populated in the configuration file will be populated with
                                     default values.
+      --cpu-profile string          Save the pprof cpu profile in the specified file
+      --mem-profile string          Save the pprof mem profile in the specified file
 ```
 
-## Development
-* `make deps` to install dependencies
-* `make test` to run tests
-* `make lint` to lint the source code (included generated code)
-* `make release` to run one last check before opening a PR
-
-### Helper/Handler
-Many of the packages use a `Helper/Handler` interface pattern to acquire
-required information or to send events to some client implementation. An example
-of this is in the `reconciler` package where a `Helper` is used to get
-the account balance and the `Handler` is called to incidate whether the
-reconciliation of an account was successful.
-
-### Repo Structure
+#### utils:train-zstd
 ```
-cmd
-examples // examples of different config files
-internal
-  logger // logic to write syncing information to stdout/files
-  processor // Helper/Handler implementations for reconciler, storage, and syncer
-  storage // persists block to temporary storage and allows for querying balances
-  utils // useful functions
+Zstandard (https://github.com/facebook/zstd) is used by
+rosetta-sdk-go/storage to compress data stored to disk. It is possible
+to improve compression performance by training a dictionary on a particular
+storage namespace. This command runs this training and outputs a dictionary
+that can be used with rosetta-sdk-go/storage.
+
+The arguments for this command are:
+<namespace> <database path> <dictionary path> <max items> (<existing dictionary path>)
+
+You can learn more about dictionary compression on the Zstandard
+website: https://github.com/facebook/zstd#the-case-for-small-data-compression
+
+Usage:
+  rosetta-cli utils:train-zstd [flags]
+
+Flags:
+  -h, --help   help for utils:train-zstd
+
+Global Flags:
+      --block-profile string        Save the pprof block profile in the specified file
+      --configuration-file string   Configuration file that provides connection and test settings.
+                                    If you would like to generate a starter configuration file (populated
+                                    with the defaults), run rosetta-cli configuration:create.
+
+                                    Any fields not populated in the configuration file will be populated with
+                                    default values.
+      --cpu-profile string          Save the pprof cpu profile in the specified file
+      --mem-profile string          Save the pprof mem profile in the specified file
 ```
 
 ## Correctness Checks
@@ -399,6 +549,30 @@ involved in any transactions. The balances of accounts could change
 on the blockchain node without being included in an operation
 returned by the Rosetta Data API. Recall that all balance-changing
 operations should be returned by the Rosetta Data API.
+
+## Development
+* `make deps` to install dependencies
+* `make test` to run tests
+* `make lint` to lint the source code (included generated code)
+* `make release` to run one last check before opening a PR
+* `make compile version=RELEASE_TAG` to generate binaries
+
+### Helper/Handler
+Many of the packages use a `Helper/Handler` interface pattern to acquire
+required information or to send events to some client implementation. An example
+of this is in the `reconciler` package where a `Helper` is used to get
+the account balance and the `Handler` is called to incidate whether the
+reconciliation of an account was successful.
+
+### Repo Structure
+```
+cmd
+examples // examples of different config files
+pkg
+  logger // logic to write syncing information to stdout/files
+  processor // Helper/Handler implementations for reconciler, storage, and syncer
+  tester // test orchestrators
+```
 
 ## License
 This project is available open source under the terms of the [Apache 2.0 License](https://opensource.org/licenses/Apache-2.0).

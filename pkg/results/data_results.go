@@ -12,25 +12,33 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package tester
+package results
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"os"
 	"strconv"
 
 	"github.com/coinbase/rosetta-cli/configuration"
-	"github.com/coinbase/rosetta-cli/pkg/processor"
 
+	"github.com/coinbase/rosetta-sdk-go/asserter"
 	"github.com/coinbase/rosetta-sdk-go/fetcher"
+	"github.com/coinbase/rosetta-sdk-go/reconciler"
 	"github.com/coinbase/rosetta-sdk-go/storage"
 	"github.com/coinbase/rosetta-sdk-go/syncer"
+	"github.com/coinbase/rosetta-sdk-go/types"
 	"github.com/coinbase/rosetta-sdk-go/utils"
 	"github.com/fatih/color"
 	"github.com/olekukonko/tablewriter"
+)
+
+var (
+	f  = false
+	tr = true
 )
 
 // EndCondition contains the type of
@@ -64,8 +72,10 @@ func (c *CheckDataResults) Print() {
 	}
 
 	fmt.Printf("\n")
-	c.Tests.Print()
-	fmt.Printf("\n")
+	if c.Tests != nil {
+		c.Tests.Print()
+		fmt.Printf("\n")
+	}
 	if c.Stats != nil {
 		c.Stats.Print()
 		fmt.Printf("\n")
@@ -92,6 +102,9 @@ type CheckDataStats struct {
 	Operations              int64   `json:"operations"`
 	ActiveReconciliations   int64   `json:"active_reconciliations"`
 	InactiveReconciliations int64   `json:"inactive_reconciliations"`
+	ExemptReconciliations   int64   `json:"exempt_reconciliations"`
+	FailedReconciliations   int64   `json:"failed_reconciliations"`
+	SkippedReconciliations  int64   `json:"skipped_reconciliations"`
 	ReconciliationCoverage  float64 `json:"reconciliation_coverage"`
 }
 
@@ -123,8 +136,29 @@ func (c *CheckDataStats) Print() {
 	table.Append(
 		[]string{
 			"Inactive Reconciliations",
-			"# of reconciliation performed on randomly selected accounts",
+			"# of reconciliations performed on randomly selected accounts",
 			strconv.FormatInt(c.InactiveReconciliations, 10),
+		},
+	)
+	table.Append(
+		[]string{
+			"Exempt Reconciliations",
+			"# of reconciliation failures considered exempt",
+			strconv.FormatInt(c.ExemptReconciliations, 10),
+		},
+	)
+	table.Append(
+		[]string{
+			"Failed Reconciliations",
+			"# of reconciliation failures",
+			strconv.FormatInt(c.FailedReconciliations, 10),
+		},
+	)
+	table.Append(
+		[]string{
+			"Skipped Reconciliations",
+			"# of reconciliations skipped",
+			strconv.FormatInt(c.SkippedReconciliations, 10),
 		},
 	)
 	table.Append(
@@ -184,6 +218,24 @@ func ComputeCheckDataStats(
 		return nil
 	}
 
+	exemptReconciliations, err := counters.Get(ctx, storage.ExemptReconciliationCounter)
+	if err != nil {
+		log.Printf("%s: cannot get exempt reconciliations counter", err.Error())
+		return nil
+	}
+
+	failedReconciliations, err := counters.Get(ctx, storage.FailedReconciliationCounter)
+	if err != nil {
+		log.Printf("%s: cannot get failed reconciliations counter", err.Error())
+		return nil
+	}
+
+	skippedReconciliations, err := counters.Get(ctx, storage.SkippedReconciliationsCounter)
+	if err != nil {
+		log.Printf("%s: cannot get skipped reconciliations counter", err.Error())
+		return nil
+	}
+
 	stats := &CheckDataStats{
 		Blocks:                  blocks.Int64(),
 		Orphans:                 orphans.Int64(),
@@ -191,6 +243,9 @@ func ComputeCheckDataStats(
 		Operations:              ops.Int64(),
 		ActiveReconciliations:   activeReconciliations.Int64(),
 		InactiveReconciliations: inactiveReconciliations.Int64(),
+		ExemptReconciliations:   exemptReconciliations.Int64(),
+		FailedReconciliations:   failedReconciliations.Int64(),
+		SkippedReconciliations:  skippedReconciliations.Int64(),
 	}
 
 	if balances != nil {
@@ -204,6 +259,154 @@ func ComputeCheckDataStats(
 	}
 
 	return stats
+}
+
+// CheckDataProgress contains information
+// about check:data's syncing progress.
+type CheckDataProgress struct {
+	Blocks              int64   `json:"blocks"`
+	Tip                 int64   `json:"tip"`
+	Completed           float64 `json:"completed"`
+	Rate                float64 `json:"rate"`
+	TimeRemaining       string  `json:"time_remaining"`
+	ReconcilerQueueSize int     `json:"reconciler_queue_size"`
+	ReconcilerLastIndex int64   `json:"reconciler_last_index"`
+}
+
+// ComputeCheckDataProgress returns
+// a populated *CheckDataProgress.
+func ComputeCheckDataProgress(
+	ctx context.Context,
+	fetcher *fetcher.Fetcher,
+	network *types.NetworkIdentifier,
+	counters *storage.CounterStorage,
+	blockStorage *storage.BlockStorage,
+	reconciler *reconciler.Reconciler,
+) *CheckDataProgress {
+	networkStatus, fetchErr := fetcher.NetworkStatusRetry(ctx, network, nil)
+	if fetchErr != nil {
+		fmt.Printf("%s: cannot get network status", fetchErr.Err.Error())
+		return nil
+	}
+	tipIndex := networkStatus.CurrentBlockIdentifier.Index
+
+	// Get current tip in the case that re-orgs occurred
+	// or a custom start index was provied.
+	headBlock, err := blockStorage.GetHeadBlockIdentifier(ctx)
+	if errors.Is(err, storage.ErrHeadBlockNotFound) {
+		return nil
+	}
+	if err != nil {
+		fmt.Printf("%s: cannot get head block", err.Error())
+		return nil
+	}
+
+	blocks, err := counters.Get(ctx, storage.BlockCounter)
+	if err != nil {
+		fmt.Printf("%s: cannot get block counter", err.Error())
+		return nil
+	}
+
+	if blocks.Sign() == 0 { // wait for at least 1 block to be processed
+		return nil
+	}
+
+	orphans, err := counters.Get(ctx, storage.OrphanCounter)
+	if err != nil {
+		fmt.Printf("%s: cannot get orphan counter", err.Error())
+		return nil
+	}
+
+	// adjustedBlocks is used to calculate the sync rate (regardless
+	// of which block we started syncing at)
+	adjustedBlocks := blocks.Int64() - orphans.Int64()
+	if tipIndex-adjustedBlocks <= 0 { // return if no blocks to sync
+		return nil
+	}
+
+	elapsedTime, err := counters.Get(ctx, TimeElapsedCounter)
+	if err != nil {
+		fmt.Printf("%s: cannot get elapsed time", err.Error())
+		return nil
+	}
+
+	if elapsedTime.Sign() == 0 { // wait for at least some elapsed time
+		return nil
+	}
+
+	blocksPerSecond := new(
+		big.Float,
+	).Quo(
+		new(big.Float).SetInt64(adjustedBlocks),
+		new(big.Float).SetInt(elapsedTime),
+	)
+	blocksPerSecondFloat, _ := blocksPerSecond.Float64()
+	blocksSynced := new(
+		big.Float,
+	).Quo(
+		new(big.Float).SetInt64(headBlock.Index),
+		new(big.Float).SetInt64(tipIndex),
+	)
+	blocksSyncedFloat, _ := blocksSynced.Float64()
+
+	return &CheckDataProgress{
+		Blocks:    headBlock.Index,
+		Tip:       tipIndex,
+		Completed: blocksSyncedFloat * utils.OneHundred,
+		Rate:      blocksPerSecondFloat,
+		TimeRemaining: utils.TimeToTip(
+			blocksPerSecondFloat,
+			headBlock.Index,
+			tipIndex,
+		).String(),
+		ReconcilerQueueSize: reconciler.QueueSize(),
+		ReconcilerLastIndex: reconciler.LastIndexReconciled(),
+	}
+}
+
+// CheckDataStatus contains both CheckDataStats
+// and CheckDataProgress.
+type CheckDataStatus struct {
+	Stats    *CheckDataStats    `json:"stats"`
+	Progress *CheckDataProgress `json:"progress"`
+}
+
+// ComputeCheckDataStatus returns a populated
+// *CheckDataStatus.
+func ComputeCheckDataStatus(
+	ctx context.Context,
+	blocks *storage.BlockStorage,
+	counters *storage.CounterStorage,
+	balances *storage.BalanceStorage,
+	fetcher *fetcher.Fetcher,
+	network *types.NetworkIdentifier,
+	reconciler *reconciler.Reconciler,
+) *CheckDataStatus {
+	return &CheckDataStatus{
+		Stats: ComputeCheckDataStats(
+			ctx,
+			counters,
+			balances,
+		),
+		Progress: ComputeCheckDataProgress(
+			ctx,
+			fetcher,
+			network,
+			counters,
+			blocks,
+			reconciler,
+		),
+	}
+}
+
+// FetchCheckDataStatus fetches *CheckDataStatus.
+func FetchCheckDataStatus(url string) (*CheckDataStatus, error) {
+	var status CheckDataStatus
+	if err := JSONFetch(url, &status); err != nil {
+		return nil, fmt.Errorf("%w: unable to fetch construction status", err)
+	}
+
+	return &status, nil
 }
 
 // CheckDataTests indicates which tests passed.
@@ -281,41 +484,29 @@ func (c *CheckDataTests) Print() {
 // indicating if all endpoints received
 // a non-500 response.
 func RequestResponseTest(err error) bool {
-	if errors.Is(err, fetcher.ErrExhaustedRetries) || errors.Is(err, fetcher.ErrRequestFailed) ||
-		errors.Is(err, fetcher.ErrNoNetworks) || errors.Is(err, utils.ErrNetworkNotSupported) {
-		return false
-	}
-
-	return true
+	return !(fetcher.Err(err) ||
+		errors.Is(err, utils.ErrNetworkNotSupported) ||
+		errors.Is(err, syncer.ErrGetNetworkStatusFailed) ||
+		errors.Is(err, syncer.ErrFetchBlockFailed))
 }
 
 // ResponseAssertionTest returns a boolean
 // indicating if all responses received from
 // the server were correctly formatted.
 func ResponseAssertionTest(err error) bool {
-	if errors.Is(err, fetcher.ErrAssertionFailed) { // nolint
-		return false
-	}
-
-	return true
+	is, _ := asserter.Err(err)
+	return !is
 }
 
 // BlockSyncingTest returns a boolean
 // indicating if it was possible to sync
 // blocks.
 func BlockSyncingTest(err error, blocksSynced bool) *bool {
-	relatedErrors := []error{
-		syncer.ErrCannotRemoveGenesisBlock,
-		syncer.ErrOutOfOrder,
-		storage.ErrDuplicateKey,
-		storage.ErrDuplicateTransactionHash,
-	}
 	syncPass := true
-	for _, relatedError := range relatedErrors {
-		if errors.Is(err, relatedError) {
-			syncPass = false
-			break
-		}
+	storageFailed, _ := storage.Err(err)
+	if syncer.Err(err) ||
+		(storageFailed && !errors.Is(err, storage.ErrNegativeBalance)) {
+		syncPass = false
 	}
 
 	if !blocksSynced && syncPass {
@@ -329,12 +520,9 @@ func BlockSyncingTest(err error, blocksSynced bool) *bool {
 // indicating if any balances went negative
 // while syncing.
 func BalanceTrackingTest(cfg *configuration.Configuration, err error, operationsSeen bool) *bool {
-	relatedErrors := []error{
-		storage.ErrNegativeBalance,
-	}
 	balancePass := true
-	for _, relatedError := range relatedErrors {
-		if errors.Is(err, relatedError) {
+	for _, balanceStorageErr := range storage.BalanceStorageErrs {
+		if errors.Is(err, balanceStorageErr) {
 			balancePass = false
 			break
 		}
@@ -353,29 +541,27 @@ func ReconciliationTest(
 	cfg *configuration.Configuration,
 	err error,
 	reconciliationsPerformed bool,
+	reconciliationsFailed bool,
 ) *bool {
-	relatedErrors := []error{
-		processor.ErrReconciliationFailure,
-	}
-	reconciliationPass := true
-	for _, relatedError := range relatedErrors {
-		if errors.Is(err, relatedError) {
-			reconciliationPass = false
-			break
-		}
+	if errors.Is(err, ErrReconciliationFailure) {
+		return &f
 	}
 
-	if (cfg.Data.BalanceTrackingDisabled || cfg.Data.ReconciliationDisabled || cfg.Data.IgnoreReconciliationError ||
-		!reconciliationsPerformed) &&
-		reconciliationPass {
+	if cfg.Data.BalanceTrackingDisabled ||
+		cfg.Data.ReconciliationDisabled ||
+		(!reconciliationsPerformed && !reconciliationsFailed) {
 		return nil
 	}
 
-	return &reconciliationPass
+	if reconciliationsFailed {
+		return &f
+	}
+
+	return &tr
 }
 
 // ComputeCheckDataTests returns a populated CheckDataTests.
-func ComputeCheckDataTests(
+func ComputeCheckDataTests( // nolint:gocognit
 	ctx context.Context,
 	cfg *configuration.Configuration,
 	err error,
@@ -383,6 +569,7 @@ func ComputeCheckDataTests(
 ) *CheckDataTests {
 	operationsSeen := false
 	reconciliationsPerformed := false
+	reconciliationsFailed := false
 	blocksSynced := false
 	if counterStorage != nil {
 		blocks, err := counterStorage.Get(ctx, storage.BlockCounter)
@@ -407,6 +594,23 @@ func ComputeCheckDataTests(
 		if err == nil && inactiveReconciliations.Int64() > 0 {
 			reconciliationsPerformed = true
 		}
+
+		exemptReconciliations, err := counterStorage.Get(
+			ctx,
+			storage.ExemptReconciliationCounter,
+		)
+		if err == nil && exemptReconciliations.Int64() > 0 {
+			reconciliationsPerformed = true
+		}
+
+		failedReconciliations, err := counterStorage.Get(
+			ctx,
+			storage.FailedReconciliationCounter,
+		)
+		if err == nil && failedReconciliations.Int64() > 0 {
+			reconciliationsPerformed = true
+			reconciliationsFailed = true
+		}
 	}
 
 	return &CheckDataTests{
@@ -414,7 +618,12 @@ func ComputeCheckDataTests(
 		ResponseAssertion: ResponseAssertionTest(err),
 		BlockSyncing:      BlockSyncingTest(err, blocksSynced),
 		BalanceTracking:   BalanceTrackingTest(cfg, err, operationsSeen),
-		Reconciliation:    ReconciliationTest(cfg, err, reconciliationsPerformed),
+		Reconciliation: ReconciliationTest(
+			cfg,
+			err,
+			reconciliationsPerformed,
+			reconciliationsFailed,
+		),
 	}
 }
 
@@ -438,6 +647,17 @@ func ComputeCheckDataResults(
 	if err != nil {
 		results.Error = err.Error()
 
+		// If all tests pass, but we still encountered an error,
+		// then we hard exit without showing check:data results
+		// because the error falls beyond our test coverage.
+		if tests.RequestResponse &&
+			tests.ResponseAssertion &&
+			(tests.BlockSyncing == nil || *tests.BlockSyncing) &&
+			(tests.BalanceTracking == nil || *tests.BalanceTracking) &&
+			(tests.Reconciliation == nil || *tests.Reconciliation) {
+			results.Tests = nil
+		}
+
 		// We never want to populate an end condition
 		// if there was an error!
 		return results
@@ -453,17 +673,16 @@ func ComputeCheckDataResults(
 	return results
 }
 
-// Exit exits the program, logs the test results to the console,
+// ExitData exits check:data, logs the test results to the console,
 // and to a provided output path.
-func Exit(
+func ExitData(
 	config *configuration.Configuration,
 	counterStorage *storage.CounterStorage,
 	balanceStorage *storage.BalanceStorage,
 	err error,
-	status int,
 	endCondition configuration.CheckDataEndCondition,
 	endConditionDetail string,
-) {
+) error {
 	results := ComputeCheckDataResults(
 		config,
 		err,
@@ -472,8 +691,10 @@ func Exit(
 		endCondition,
 		endConditionDetail,
 	)
-	results.Print()
-	results.Output(config.Data.ResultsOutputFile)
+	if results != nil {
+		results.Print()
+		results.Output(config.Data.ResultsOutputFile)
+	}
 
-	os.Exit(status)
+	return err
 }

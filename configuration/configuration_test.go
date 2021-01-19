@@ -15,10 +15,12 @@
 package configuration
 
 import (
-	"io/ioutil"
-	"os"
+	"context"
+	"os/exec"
+	"path"
 	"testing"
 
+	"github.com/coinbase/rosetta-sdk-go/constructor/job"
 	"github.com/coinbase/rosetta-sdk-go/storage"
 	"github.com/coinbase/rosetta-sdk-go/types"
 	"github.com/coinbase/rosetta-sdk-go/utils"
@@ -26,50 +28,73 @@ import (
 )
 
 var (
-	startIndex    = int64(89)
-	badStartIndex = int64(-10)
-	goodCoverage  = float64(0.33)
-	badCoverage   = float64(-2)
-	endTip        = false
-	whackyConfig  = &Configuration{
+	startIndex        = int64(89)
+	badStartIndex     = int64(-10)
+	goodCoverage      = float64(0.33)
+	badCoverage       = float64(-2)
+	endTip            = false
+	historicalEnabled = true
+	fakeWorkflows     = []*job.Workflow{
+		{
+			Name:        string(job.CreateAccount),
+			Concurrency: job.ReservedWorkflowConcurrency,
+			Scenarios: []*job.Scenario{
+				{
+					Name:    "blah",
+					Actions: []*job.Action{},
+				},
+			},
+		},
+		{
+			Name:        string(job.RequestFunds),
+			Concurrency: job.ReservedWorkflowConcurrency,
+			Scenarios: []*job.Scenario{
+				{
+					Name:    "blah",
+					Actions: []*job.Action{},
+				},
+			},
+		},
+	}
+	whackyConfig = &Configuration{
 		Network: &types.NetworkIdentifier{
 			Blockchain: "sweet",
 			Network:    "sweeter",
 		},
-		OnlineURL:              "http://hasudhasjkdk",
-		HTTPTimeout:            21,
-		RetryElapsedTime:       1000,
-		SyncConcurrency:        12,
-		TransactionConcurrency: 2,
-		TipDelay:               1231,
+		OnlineURL:            "http://hasudhasjkdk",
+		MaxOnlineConnections: 10,
+		HTTPTimeout:          21,
+		MaxRetries:           1000,
+		MaxSyncConcurrency:   12,
+		TipDelay:             1231,
+		MaxReorgDepth:        12,
 		Construction: &ConstructionConfiguration{
-			OfflineURL: "https://ashdjaksdkjshdk",
-			Currency: &types.Currency{
-				Symbol:   "FIRE",
-				Decimals: 100,
-			},
-			MinimumBalance:        "1002",
-			MaximumFee:            "1",
-			CurveType:             types.Edwards25519,
-			AccountingModel:       UtxoModel,
-			Scenario:              EthereumTransfer,
-			ChangeScenario:        EthereumTransfer[0],
-			ConfirmationDepth:     100,
+			OfflineURL:            "https://ashdjaksdkjshdk",
+			MaxOfflineConnections: 21,
 			StaleDepth:            12,
 			BroadcastLimit:        200,
 			BlockBroadcastLimit:   992,
-			NewAccountProbability: 0.1,
-			MaxAddresses:          12,
+			StatusPort:            21,
+			Workflows: append(
+				fakeWorkflows,
+				&job.Workflow{
+					Name:        "transfer",
+					Concurrency: 100,
+				},
+			),
 		},
 		Data: &DataConfiguration{
 			ActiveReconciliationConcurrency:   100,
 			InactiveReconciliationConcurrency: 2938,
 			InactiveReconciliationFrequency:   3,
 			ReconciliationDisabled:            false,
-			HistoricalBalanceDisabled:         true,
+			HistoricalBalanceEnabled:          &historicalEnabled,
 			StartIndex:                        &startIndex,
+			StatusPort:                        123,
 			EndConditions: &DataEndConditions{
-				ReconciliationCoverage: &goodCoverage,
+				ReconciliationCoverage: &ReconciliationCoverage{
+					Coverage: goodCoverage,
+				},
 			},
 		},
 	}
@@ -78,34 +103,6 @@ var (
 			Blockchain: "?",
 		},
 	}
-	invalidCurrency = &Configuration{
-		Construction: &ConstructionConfiguration{
-			Currency: &types.Currency{
-				Decimals: 12,
-			},
-		},
-	}
-	invalidCurve = &Configuration{
-		Construction: &ConstructionConfiguration{
-			CurveType: "hello",
-		},
-	}
-	invalidAccountingModel = &Configuration{
-		Construction: &ConstructionConfiguration{
-			AccountingModel: "hello",
-		},
-	}
-	invalidMinimumBalance = &Configuration{
-		Construction: &ConstructionConfiguration{
-			MinimumBalance: "-1000",
-		},
-	}
-	invalidMaximumFee = &Configuration{
-		Construction: &ConstructionConfiguration{
-			MaximumFee: "hello",
-		},
-	}
-
 	invalidPrefundedAccounts = &Configuration{
 		Construction: &ConstructionConfiguration{
 			PrefundedAccounts: []*storage.PrefundedAccount{
@@ -138,13 +135,19 @@ var (
 	invalidReconciliationCoverage = &Configuration{
 		Data: &DataConfiguration{
 			EndConditions: &DataEndConditions{
-				ReconciliationCoverage: &badCoverage,
+				ReconciliationCoverage: &ReconciliationCoverage{
+					Coverage: badCoverage,
+				},
 			},
 		},
 	}
 )
 
 func TestLoadConfiguration(t *testing.T) {
+	var (
+		goodAccountCount = int64(10)
+		badAccountCount  = int64(-10)
+	)
 	var tests = map[string]struct {
 		provided *Configuration
 		expected *Configuration
@@ -161,33 +164,83 @@ func TestLoadConfiguration(t *testing.T) {
 		},
 		"overwrite missing": {
 			provided: &Configuration{
-				Construction: &ConstructionConfiguration{},
-				Data:         &DataConfiguration{},
+				Construction: &ConstructionConfiguration{
+					Workflows: fakeWorkflows,
+				},
+				Data: &DataConfiguration{},
 			},
-			expected: DefaultConfiguration(),
+			expected: func() *Configuration {
+				cfg := DefaultConfiguration()
+				cfg.Construction = &ConstructionConfiguration{
+					OfflineURL:            DefaultURL,
+					MaxOfflineConnections: DefaultMaxOfflineConnections,
+					StaleDepth:            DefaultStaleDepth,
+					BroadcastLimit:        DefaultBroadcastLimit,
+					BlockBroadcastLimit:   DefaultBlockBroadcastLimit,
+					StatusPort:            DefaultStatusPort,
+					Workflows:             fakeWorkflows,
+				}
+
+				return cfg
+			}(),
+		},
+		"overwrite missing with DSL": {
+			provided: &Configuration{
+				Construction: &ConstructionConfiguration{
+					ConstructorDSLFile: "test.ros",
+				},
+				Data: &DataConfiguration{},
+			},
+			expected: func() *Configuration {
+				cfg := DefaultConfiguration()
+				cfg.Construction = &ConstructionConfiguration{
+					OfflineURL:            DefaultURL,
+					MaxOfflineConnections: DefaultMaxOfflineConnections,
+					StaleDepth:            DefaultStaleDepth,
+					BroadcastLimit:        DefaultBroadcastLimit,
+					BlockBroadcastLimit:   DefaultBlockBroadcastLimit,
+					StatusPort:            DefaultStatusPort,
+					Workflows:             fakeWorkflows,
+					ConstructorDSLFile:    "test.ros",
+				}
+
+				return cfg
+			}(),
+		},
+		"transfer workflow": {
+			provided: &Configuration{
+				Construction: &ConstructionConfiguration{
+					Workflows: []*job.Workflow{
+						{
+							Name:        "transfer",
+							Concurrency: 10,
+						},
+					},
+				},
+				Data: &DataConfiguration{},
+			},
+			expected: func() *Configuration {
+				cfg := DefaultConfiguration()
+				cfg.Construction = &ConstructionConfiguration{
+					OfflineURL:            DefaultURL,
+					MaxOfflineConnections: DefaultMaxOfflineConnections,
+					StaleDepth:            DefaultStaleDepth,
+					BroadcastLimit:        DefaultBroadcastLimit,
+					BlockBroadcastLimit:   DefaultBlockBroadcastLimit,
+					StatusPort:            DefaultStatusPort,
+					Workflows: []*job.Workflow{
+						{
+							Name:        "transfer",
+							Concurrency: 10,
+						},
+					},
+				}
+
+				return cfg
+			}(),
 		},
 		"invalid network": {
 			provided: invalidNetwork,
-			err:      true,
-		},
-		"invalid currency": {
-			provided: invalidCurrency,
-			err:      true,
-		},
-		"invalid curve type": {
-			provided: invalidCurve,
-			err:      true,
-		},
-		"invalid accounting model": {
-			provided: invalidAccountingModel,
-			err:      true,
-		},
-		"invalid minimum balance": {
-			provided: invalidMinimumBalance,
-			err:      true,
-		},
-		"invalid maximum fee": {
-			provided: invalidMaximumFee,
 			err:      true,
 		},
 		"invalid prefunded accounts": {
@@ -211,7 +264,9 @@ func TestLoadConfiguration(t *testing.T) {
 				Data: &DataConfiguration{
 					ReconciliationDisabled: true,
 					EndConditions: &DataEndConditions{
-						ReconciliationCoverage: &goodCoverage,
+						ReconciliationCoverage: &ReconciliationCoverage{
+							Coverage: goodCoverage,
+						},
 					},
 				},
 			},
@@ -222,7 +277,9 @@ func TestLoadConfiguration(t *testing.T) {
 				Data: &DataConfiguration{
 					BalanceTrackingDisabled: true,
 					EndConditions: &DataEndConditions{
-						ReconciliationCoverage: &goodCoverage,
+						ReconciliationCoverage: &ReconciliationCoverage{
+							Coverage: goodCoverage,
+						},
 					},
 				},
 			},
@@ -233,8 +290,77 @@ func TestLoadConfiguration(t *testing.T) {
 				Data: &DataConfiguration{
 					IgnoreReconciliationError: true,
 					EndConditions: &DataEndConditions{
-						ReconciliationCoverage: &goodCoverage,
+						ReconciliationCoverage: &ReconciliationCoverage{
+							Coverage: goodCoverage,
+						},
 					},
+				},
+			},
+			err: true,
+		},
+		"valid reconciliation coverage (with account count)": {
+			provided: &Configuration{
+				Data: &DataConfiguration{
+					EndConditions: &DataEndConditions{
+						ReconciliationCoverage: &ReconciliationCoverage{
+							Coverage:     goodCoverage,
+							AccountCount: &goodAccountCount,
+							Index:        &goodAccountCount,
+						},
+					},
+				},
+			},
+			expected: func() *Configuration {
+				cfg := DefaultConfiguration()
+				cfg.Data.EndConditions = &DataEndConditions{
+					ReconciliationCoverage: &ReconciliationCoverage{
+						Coverage:     goodCoverage,
+						AccountCount: &goodAccountCount,
+						Index:        &goodAccountCount,
+					},
+				}
+
+				return cfg
+			}(),
+		},
+		"invalid reconciliation coverage (with account count)": {
+			provided: &Configuration{
+				Data: &DataConfiguration{
+					EndConditions: &DataEndConditions{
+						ReconciliationCoverage: &ReconciliationCoverage{
+							Coverage:     goodCoverage,
+							AccountCount: &badAccountCount,
+						},
+					},
+				},
+			},
+			err: true,
+		},
+		"invalid reconciliation coverage (with index)": {
+			provided: &Configuration{
+				Data: &DataConfiguration{
+					EndConditions: &DataEndConditions{
+						ReconciliationCoverage: &ReconciliationCoverage{
+							Coverage: goodCoverage,
+							Index:    &badAccountCount,
+						},
+					},
+				},
+			},
+			err: true,
+		},
+		"empty workflows": {
+			provided: &Configuration{
+				Construction: &ConstructionConfiguration{
+					Workflows: []*job.Workflow{},
+				},
+			},
+			err: true,
+		},
+		"non-existent dsl file": {
+			provided: &Configuration{
+				Construction: &ConstructionConfiguration{
+					ConstructorDSLFile: "blah.ros",
 				},
 			},
 			err: true,
@@ -253,24 +379,32 @@ func TestLoadConfiguration(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			// Write configuration file to tempdir
-			tmpfile, err := ioutil.TempFile("", "test.json")
+			dir, err := utils.CreateTempDir()
 			assert.NoError(t, err)
-			defer os.Remove(tmpfile.Name())
+			defer utils.RemoveTempDir(dir)
 
-			err = utils.SerializeAndWrite(tmpfile.Name(), test.provided)
+			filePath := path.Join(dir, "test.json")
+			err = utils.SerializeAndWrite(filePath, test.provided)
 			assert.NoError(t, err)
+
+			// Copy test.ros to temp dir
+			cmd := exec.Command("cp", "testdata/test.ros", path.Join(dir, "test.ros"))
+			assert.NoError(t, cmd.Run())
 
 			// Check if expected fields populated
-			config, err := LoadConfiguration(tmpfile.Name())
+			config, err := LoadConfiguration(context.Background(), filePath)
 			if test.err {
 				assert.Error(t, err)
 				assert.Nil(t, config)
 			} else {
 				assert.NoError(t, err)
+
+				// Ensure test.ros expected file path is right
+				if test.expected.Construction != nil && len(test.expected.Construction.ConstructorDSLFile) > 0 {
+					test.expected.Construction.ConstructorDSLFile = path.Join(dir, test.expected.Construction.ConstructorDSLFile)
+				}
 				assert.Equal(t, test.expected, config)
 			}
-			assert.NoError(t, tmpfile.Close())
 		})
 	}
 }

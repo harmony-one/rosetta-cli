@@ -16,15 +16,15 @@ package cmd
 
 import (
 	"context"
-	"log"
-	"os"
+	"errors"
+	"fmt"
 	"time"
 
+	"github.com/coinbase/rosetta-cli/pkg/results"
 	"github.com/coinbase/rosetta-cli/pkg/tester"
 
 	"github.com/coinbase/rosetta-sdk-go/fetcher"
 	"github.com/coinbase/rosetta-sdk-go/utils"
-	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 )
@@ -49,29 +49,51 @@ Ethereum.
 Right now, this tool only supports transfer testing (for both account-based
 and UTXO-based blockchains). However, we plan to add support for testing
 arbitrary scenarios (i.e. staking, governance).`,
-		Run: runCheckConstructionCmd,
+		RunE: runCheckConstructionCmd,
 	}
 )
 
-func runCheckConstructionCmd(cmd *cobra.Command, args []string) {
+func runCheckConstructionCmd(cmd *cobra.Command, args []string) error {
+	if Config.Construction == nil {
+		return results.ExitConstruction(
+			Config,
+			nil,
+			nil,
+			errors.New("construction configuration is missing"),
+		)
+	}
+
 	ensureDataDirectoryExists()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(Context)
 
 	fetcher := fetcher.New(
 		Config.OnlineURL,
-		fetcher.WithTransactionConcurrency(Config.TransactionConcurrency),
+		fetcher.WithMaxConnections(Config.MaxOnlineConnections),
 		fetcher.WithRetryElapsedTime(time.Duration(Config.RetryElapsedTime)*time.Second),
 		fetcher.WithTimeout(time.Duration(Config.HTTPTimeout)*time.Second),
+		fetcher.WithMaxRetries(Config.MaxRetries),
 	)
 
-	_, _, fetchErr := fetcher.InitializeAsserter(ctx)
+	_, _, fetchErr := fetcher.InitializeAsserter(ctx, Config.Network)
 	if fetchErr != nil {
-		log.Fatalf("%s: unable to initialize asserter", fetchErr.Err.Error())
+		cancel()
+		return results.ExitConstruction(
+			Config,
+			nil,
+			nil,
+			fmt.Errorf("%w: unable to initialize asserter", fetchErr.Err),
+		)
 	}
 
 	_, err := utils.CheckNetworkSupported(ctx, Config.Network, fetcher)
 	if err != nil {
-		log.Fatalf("%s: unable to confirm network is supported", err.Error())
+		cancel()
+		return results.ExitConstruction(
+			Config,
+			nil,
+			nil,
+			fmt.Errorf("%w: unable to confirm network is supported", err),
+		)
 	}
 
 	constructionTester, err := tester.InitializeConstruction(
@@ -80,15 +102,26 @@ func runCheckConstructionCmd(cmd *cobra.Command, args []string) {
 		Config.Network,
 		fetcher,
 		cancel,
+		&SignalReceived,
 	)
 	if err != nil {
-		log.Fatalf("%s: unable to initialize construction tester", err.Error())
+		return results.ExitConstruction(
+			Config,
+			nil,
+			nil,
+			fmt.Errorf("%w: unable to initialize construction tester", err),
+		)
 	}
 
 	defer constructionTester.CloseDatabase(ctx)
 
 	if err := constructionTester.PerformBroadcasts(ctx); err != nil {
-		log.Fatalf("%s: unable to perform broadcasts", err.Error())
+		return results.ExitConstruction(
+			Config,
+			nil,
+			nil,
+			fmt.Errorf("%w: unable to perform broadcasts", err),
+		)
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
@@ -104,21 +137,25 @@ func runCheckConstructionCmd(cmd *cobra.Command, args []string) {
 		return constructionTester.StartConstructor(ctx)
 	})
 
+	g.Go(func() error {
+		return constructionTester.WatchEndConditions(ctx)
+	})
+
+	g.Go(func() error {
+		return tester.LogMemoryLoop(ctx)
+	})
+
+	g.Go(func() error {
+		return tester.StartServer(
+			ctx,
+			"check:construction status",
+			constructionTester,
+			Config.Construction.StatusPort,
+		)
+	})
+
 	sigListeners := []context.CancelFunc{cancel}
-	go handleSignals(sigListeners)
+	go handleSignals(&sigListeners)
 
-	err = g.Wait()
-	if SignalReceived {
-		color.Red("Check halted")
-		os.Exit(1)
-		return
-	}
-
-	if err != nil {
-		color.Red("Check failed: %s", err.Error())
-		os.Exit(1)
-	}
-
-	// Will only hit this once exit conditions are added
-	color.Green("Check succeeded")
+	return constructionTester.HandleErr(g.Wait(), &sigListeners)
 }

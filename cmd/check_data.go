@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/coinbase/rosetta-cli/pkg/results"
 	"github.com/coinbase/rosetta-cli/pkg/tester"
 
 	"github.com/coinbase/rosetta-sdk-go/fetcher"
@@ -39,15 +40,15 @@ computed balance changes are equal to balance changes reported by the node.
 When re-running this command, it will start where it left off if you specify
 some data directory. Otherwise, it will create a new temporary directory and start
 again from the genesis block. If you want to discard some number of blocks
-populate the --start flag with some block index. Starting from a given index
-can be useful to debug a small range of blocks for issues but it is highly
-recommended you sync from start to finish to ensure all correctness checks
-are performed.
+populate the start_index filed in the configuration file with some block index.
+Starting from a given index can be useful to debug a small range of blocks for
+issues but it is highly recommended you sync from start to finish to ensure
+all correctness checks are performed.
 
 By default, account balances are looked up at specific heights (instead of
-only at the current block). If your node does not support this functionality
-set historical balance disabled to true. This will make reconciliation much
-less efficient but it will still work.
+only at the current block). If your node does not support this functionality,
+you can disable historical balance lookups in your configuration file. This will
+make reconciliation much less efficient but it will still work.
 
 If check fails due to an INACTIVE reconciliation error (balance changed without
 any corresponding operation), the cli will automatically try to find the block
@@ -65,29 +66,30 @@ historical balance disabled to true, you must provide an
 absolute path to a JSON file containing initial balances with the
 bootstrap balance config. You can look at the examples folder for an example
 of what one of these files looks like.`,
-		Run: runCheckDataCmd,
+		RunE: runCheckDataCmd,
 	}
 )
 
-func runCheckDataCmd(cmd *cobra.Command, args []string) {
+func runCheckDataCmd(cmd *cobra.Command, args []string) error {
 	ensureDataDirectoryExists()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(Context)
 
 	fetcher := fetcher.New(
 		Config.OnlineURL,
-		fetcher.WithTransactionConcurrency(Config.TransactionConcurrency),
+		fetcher.WithMaxConnections(Config.MaxOnlineConnections),
 		fetcher.WithRetryElapsedTime(time.Duration(Config.RetryElapsedTime)*time.Second),
 		fetcher.WithTimeout(time.Duration(Config.HTTPTimeout)*time.Second),
+		fetcher.WithMaxRetries(Config.MaxRetries),
 	)
 
-	_, _, fetchErr := fetcher.InitializeAsserter(ctx)
+	_, _, fetchErr := fetcher.InitializeAsserter(ctx, Config.Network)
 	if fetchErr != nil {
-		tester.Exit(
+		cancel()
+		return results.ExitData(
 			Config,
 			nil,
 			nil,
 			fmt.Errorf("%w: unable to initialize asserter", fetchErr.Err),
-			1,
 			"",
 			"",
 		)
@@ -95,12 +97,12 @@ func runCheckDataCmd(cmd *cobra.Command, args []string) {
 
 	networkStatus, err := utils.CheckNetworkSupported(ctx, Config.Network, fetcher)
 	if err != nil {
-		tester.Exit(
+		cancel()
+		return results.ExitData(
 			Config,
 			nil,
 			nil,
 			fmt.Errorf("%w: unable to confirm network", err),
-			1,
 			"",
 			"",
 		)
@@ -133,19 +135,30 @@ func runCheckDataCmd(cmd *cobra.Command, args []string) {
 	})
 
 	g.Go(func() error {
+		return dataTester.StartPruning(ctx)
+	})
+
+	g.Go(func() error {
 		return dataTester.WatchEndConditions(ctx)
 	})
 
+	g.Go(func() error {
+		return tester.LogMemoryLoop(ctx)
+	})
+
+	g.Go(func() error {
+		return tester.StartServer(
+			ctx,
+			"check:data status",
+			dataTester,
+			Config.Data.StatusPort,
+		)
+	})
+
 	sigListeners := []context.CancelFunc{cancel}
-	go handleSignals(sigListeners)
-
-	err = g.Wait()
-
-	// Initialize new context because calling context
-	// will no longer be usable when after termination.
-	ctx = context.Background()
+	go handleSignals(&sigListeners)
 
 	// HandleErr will exit if we should not attempt
 	// to find missing operations.
-	dataTester.HandleErr(ctx, err, sigListeners)
+	return dataTester.HandleErr(g.Wait(), &sigListeners)
 }

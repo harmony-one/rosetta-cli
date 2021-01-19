@@ -18,16 +18,14 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math/big"
 	"os"
 	"path"
 
-	"github.com/coinbase/rosetta-cli/pkg/scenario"
+	"github.com/coinbase/rosetta-cli/pkg/results"
 
 	"github.com/coinbase/rosetta-sdk-go/parser"
 	"github.com/coinbase/rosetta-sdk-go/reconciler"
 	"github.com/coinbase/rosetta-sdk-go/statefulsyncer"
-	"github.com/coinbase/rosetta-sdk-go/storage"
 	"github.com/coinbase/rosetta-sdk-go/types"
 	"github.com/coinbase/rosetta-sdk-go/utils"
 	"github.com/fatih/color"
@@ -71,16 +69,12 @@ type Logger struct {
 	logBalanceChanges bool
 	logReconciliation bool
 
-	lastStatsMessage string
-
-	CounterStorage *storage.CounterStorage
-	BalanceStorage *storage.BalanceStorage
+	lastStatsMessage    string
+	lastProgressMessage string
 }
 
 // NewLogger constructs a new Logger.
 func NewLogger(
-	counterStorage *storage.CounterStorage,
-	balanceStorage *storage.BalanceStorage,
 	logDir string,
 	logBlocks bool,
 	logTransactions bool,
@@ -88,8 +82,6 @@ func NewLogger(
 	logReconciliation bool,
 ) *Logger {
 	return &Logger{
-		CounterStorage:    counterStorage,
-		BalanceStorage:    balanceStorage,
 		logDir:            logDir,
 		logBlocks:         logBlocks,
 		logTransactions:   logTransactions,
@@ -98,120 +90,92 @@ func NewLogger(
 	}
 }
 
-// LogDataStats logs all data values in CounterStorage.
-func (l *Logger) LogDataStats(ctx context.Context) error {
-	blocks, err := l.CounterStorage.Get(ctx, storage.BlockCounter)
-	if err != nil {
-		return fmt.Errorf("%w cannot get block counter", err)
-	}
-
-	if blocks.Sign() == 0 { // wait for at least 1 block to be processed
-		return nil
-	}
-
-	orphans, err := l.CounterStorage.Get(ctx, storage.OrphanCounter)
-	if err != nil {
-		return fmt.Errorf("%w cannot get orphan counter", err)
-	}
-
-	txs, err := l.CounterStorage.Get(ctx, storage.TransactionCounter)
-	if err != nil {
-		return fmt.Errorf("%w cannot get transaction counter", err)
-	}
-
-	ops, err := l.CounterStorage.Get(ctx, storage.OperationCounter)
-	if err != nil {
-		return fmt.Errorf("%w cannot get operations counter", err)
-	}
-
-	activeReconciliations, err := l.CounterStorage.Get(ctx, storage.ActiveReconciliationCounter)
-	if err != nil {
-		return fmt.Errorf("%w cannot get active reconciliations counter", err)
-	}
-
-	inactiveReconciliations, err := l.CounterStorage.Get(ctx, storage.InactiveReconciliationCounter)
-	if err != nil {
-		return fmt.Errorf("%w cannot get inactive reconciliations counter", err)
+// LogDataStatus logs results.CheckDataStatus.
+func (l *Logger) LogDataStatus(ctx context.Context, status *results.CheckDataStatus) {
+	if status.Stats.Blocks == 0 { // wait for at least 1 block to be processed
+		return
 	}
 
 	statsMessage := fmt.Sprintf(
-		"[STATS] Blocks: %s (Orphaned: %s) Transactions: %s Operations: %s",
-		blocks.String(),
-		orphans.String(),
-		txs.String(),
-		ops.String(),
+		"[STATS] Blocks: %d (Orphaned: %d) Transactions: %d Operations: %d Reconciliations: %d (Inactive: %d, Exempt: %d, Skipped: %d, Coverage: %f%%)", // nolint:lll
+		status.Stats.Blocks,
+		status.Stats.Orphans,
+		status.Stats.Transactions,
+		status.Stats.Operations,
+		status.Stats.ActiveReconciliations+status.Stats.InactiveReconciliations,
+		status.Stats.InactiveReconciliations,
+		status.Stats.ExemptReconciliations,
+		status.Stats.SkippedReconciliations,
+		status.Stats.ReconciliationCoverage*utils.OneHundred,
 	)
-
-	if l.BalanceStorage != nil {
-		coverage, err := l.BalanceStorage.ReconciliationCoverage(ctx, 0)
-		if err != nil {
-			return fmt.Errorf("%w: cannot get reconcile coverage", err)
-		}
-
-		statsMessage = fmt.Sprintf(
-			"%s Reconciliations: %s (Inactive: %s, Coverage: %f%%)",
-			statsMessage,
-			new(big.Int).Add(activeReconciliations, inactiveReconciliations).String(),
-			inactiveReconciliations.String(),
-			coverage*utils.OneHundred,
-		)
-	}
 
 	// Don't print out the same stats message twice.
 	if statsMessage == l.lastStatsMessage {
-		return nil
+		return
 	}
 
 	l.lastStatsMessage = statsMessage
 	color.Cyan(statsMessage)
 
-	return nil
+	// If Progress is nil, it means we're already done.
+	if status.Progress == nil {
+		return
+	}
+
+	progressMessage := fmt.Sprintf(
+		"[PROGRESS] Blocks Synced: %d/%d (Completed: %f%%, Rate: %f/second) Time Remaining: %s Reconciler Queue: %d (Last Index Checked: %d)", // nolint:lll
+		status.Progress.Blocks,
+		status.Progress.Tip,
+		status.Progress.Completed,
+		status.Progress.Rate,
+		status.Progress.TimeRemaining,
+		status.Progress.ReconcilerQueueSize,
+		status.Progress.ReconcilerLastIndex,
+	)
+
+	// Don't print out the same progress message twice.
+	if progressMessage == l.lastProgressMessage {
+		return
+	}
+
+	l.lastProgressMessage = progressMessage
+	color.Cyan(progressMessage)
 }
 
-// LogConstructionStats logs all construction values in CounterStorage.
-func (l *Logger) LogConstructionStats(ctx context.Context, inflightTransactions int) error {
-	transactionsCreated, err := l.CounterStorage.Get(ctx, storage.TransactionsCreatedCounter)
-	if err != nil {
-		return fmt.Errorf("%w cannot get transactions created counter", err)
-	}
-
-	transactionsConfirmed, err := l.CounterStorage.Get(ctx, storage.TransactionsConfirmedCounter)
-	if err != nil {
-		return fmt.Errorf("%w cannot get transactions confirmed counter", err)
-	}
-
-	staleBroadcasts, err := l.CounterStorage.Get(ctx, storage.StaleBroadcastsCounter)
-	if err != nil {
-		return fmt.Errorf("%w cannot get stale broadcasts counter", err)
-	}
-
-	failedBroadcasts, err := l.CounterStorage.Get(ctx, storage.FailedBroadcastsCounter)
-	if err != nil {
-		return fmt.Errorf("%w cannot get failed broadcasts counter", err)
-	}
-
-	addressesCreated, err := l.CounterStorage.Get(ctx, storage.AddressesCreatedCounter)
-	if err != nil {
-		return fmt.Errorf("%w cannot get addresses created counter", err)
-	}
-
+// LogConstructionStatus logs results.CheckConstructionStatus.
+func (l *Logger) LogConstructionStatus(
+	ctx context.Context,
+	status *results.CheckConstructionStatus,
+) {
 	statsMessage := fmt.Sprintf(
 		"[STATS] Transactions Confirmed: %d (Created: %d, In Progress: %d, Stale: %d, Failed: %d) Addresses Created: %d",
-		transactionsConfirmed,
-		transactionsCreated,
-		inflightTransactions,
-		staleBroadcasts,
-		failedBroadcasts,
-		addressesCreated,
+		status.Stats.TransactionsConfirmed,
+		status.Stats.TransactionsCreated,
+		status.Progress.Broadcasting,
+		status.Stats.StaleBroadcasts,
+		status.Stats.FailedBroadcasts,
+		status.Stats.AddressesCreated,
 	)
 	if statsMessage == l.lastStatsMessage {
-		return nil
+		return
 	}
 
 	l.lastStatsMessage = statsMessage
 	color.Cyan(statsMessage)
+}
 
-	return nil
+// LogMemoryStats logs memory usage information.
+func LogMemoryStats(ctx context.Context) {
+	memUsage := utils.MonitorMemoryUsage(ctx, -1)
+	statsMessage := fmt.Sprintf(
+		"[MEMORY] Heap: %fMB Stack: %fMB System: %fMB GCs: %d",
+		memUsage.Heap,
+		memUsage.Stack,
+		memUsage.System,
+		memUsage.GarbageCollections,
+	)
+
+	color.Cyan(statsMessage)
 }
 
 // AddBlockStream writes the next processed block to the end of the
@@ -235,15 +199,16 @@ func (l *Logger) AddBlockStream(
 
 	defer closeFile(f)
 
-	_, err = f.WriteString(fmt.Sprintf(
+	blockString := fmt.Sprintf(
 		"%s Block %d:%s with Parent Block %d:%s\n",
 		addEvent,
 		block.BlockIdentifier.Index,
 		block.BlockIdentifier.Hash,
 		block.ParentBlockIdentifier.Index,
 		block.ParentBlockIdentifier.Hash,
-	))
-	if err != nil {
+	)
+	fmt.Print(blockString)
+	if _, err := f.WriteString(blockString); err != nil {
 		return err
 	}
 
@@ -271,17 +236,15 @@ func (l *Logger) RemoveBlockStream(
 
 	defer closeFile(f)
 
-	_, err = f.WriteString(fmt.Sprintf(
+	blockString := fmt.Sprintf(
 		"%s Block %d:%s\n",
 		removeEvent,
 		block.Index,
 		block.Hash,
-	))
-	if err != nil {
-		return err
-	}
-
-	return nil
+	)
+	fmt.Print(blockString)
+	_, err = f.WriteString(blockString)
+	return err
 }
 
 // TransactionStream writes the next processed block's transactions
@@ -341,7 +304,7 @@ func (l *Logger) TransactionStream(
 				participant,
 				amount,
 				symbol,
-				op.Status,
+				*op.Status,
 			))
 			if err != nil {
 				return err
@@ -446,27 +409,27 @@ func (l *Logger) ReconcileFailureStream(
 	account *types.AccountIdentifier,
 	currency *types.Currency,
 	computedBalance string,
-	nodeBalance string,
+	liveBalance string,
 	block *types.BlockIdentifier,
 ) error {
 	// Always print out reconciliation failures
 	if reconciliationType == reconciler.InactiveReconciliation {
 		color.Yellow(
-			"Missing balance-changing operation detected for %s computed balance: %s%s node balance: %s%s",
+			"Missing balance-changing operation detected for %s computed: %s%s live: %s%s",
 			types.AccountString(account),
 			computedBalance,
 			currency.Symbol,
-			nodeBalance,
+			liveBalance,
 			currency.Symbol,
 		)
 	} else {
 		color.Yellow(
-			"Reconciliation failed for %s at %d computed: %s%s node: %s%s",
+			"Reconciliation failed for %s at %d computed: %s%s live: %s%s",
 			types.AccountString(account),
 			block.Index,
 			computedBalance,
 			currency.Symbol,
-			nodeBalance,
+			liveBalance,
 			currency.Symbol,
 		)
 	}
@@ -487,14 +450,14 @@ func (l *Logger) ReconcileFailureStream(
 	defer closeFile(f)
 
 	_, err = f.WriteString(fmt.Sprintf(
-		"Type:%s Account: %s Currency: %s Block: %s:%d computed: %s node: %s\n",
+		"Type:%s Account: %s Currency: %s Block: %s:%d computed: %s live: %s\n",
 		reconciliationType,
 		types.AccountString(account),
 		types.CurrencyString(currency),
 		block.Hash,
 		block.Index,
 		computedBalance,
-		nodeBalance,
+		liveBalance,
 	))
 	if err != nil {
 		return err
@@ -511,30 +474,13 @@ func closeFile(f *os.File) {
 	}
 }
 
-// LogScenario logs what a scenario is perfoming
-// to the console.
-func LogScenario(
-	scenarioCtx *scenario.Context,
+// LogTransactionCreated logs the hash of created
+// transactions.
+func LogTransactionCreated(
 	transactionIdentifier *types.TransactionIdentifier,
-	currency *types.Currency,
 ) {
-	if len(scenarioCtx.ChangeAddress) == 0 {
-		color.Magenta(
-			"Transaction Created: %s\n  %s -- %s --> %s",
-			transactionIdentifier.Hash,
-			scenarioCtx.Sender,
-			utils.PrettyAmount(scenarioCtx.RecipientValue, currency),
-			scenarioCtx.Recipient,
-		)
-	} else {
-		color.Magenta(
-			"Transaction Created: %s\n  %s\n    -- %s --> %s\n    -- %s --> %s",
-			transactionIdentifier.Hash,
-			scenarioCtx.Sender,
-			utils.PrettyAmount(scenarioCtx.RecipientValue, currency),
-			scenarioCtx.Recipient,
-			utils.PrettyAmount(scenarioCtx.ChangeValue, currency),
-			scenarioCtx.ChangeAddress,
-		)
-	}
+	color.Magenta(
+		"Transaction Created: %s\n",
+		transactionIdentifier.Hash,
+	)
 }

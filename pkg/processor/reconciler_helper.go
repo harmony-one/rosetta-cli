@@ -16,57 +16,83 @@ package processor
 
 import (
 	"context"
-	"errors"
+
+	"github.com/coinbase/rosetta-cli/configuration"
 
 	"github.com/coinbase/rosetta-sdk-go/fetcher"
+	"github.com/coinbase/rosetta-sdk-go/reconciler"
 	"github.com/coinbase/rosetta-sdk-go/storage"
 	"github.com/coinbase/rosetta-sdk-go/types"
 	"github.com/coinbase/rosetta-sdk-go/utils"
 )
 
+var _ reconciler.Helper = (*ReconcilerHelper)(nil)
+
 // ReconcilerHelper implements the Reconciler.Helper
 // interface.
 type ReconcilerHelper struct {
+	config *configuration.Configuration
+
 	network *types.NetworkIdentifier
 	fetcher *fetcher.Fetcher
 
+	database       storage.Database
 	blockStorage   *storage.BlockStorage
 	balanceStorage *storage.BalanceStorage
 }
 
 // NewReconcilerHelper returns a new ReconcilerHelper.
 func NewReconcilerHelper(
+	config *configuration.Configuration,
 	network *types.NetworkIdentifier,
 	fetcher *fetcher.Fetcher,
+	database storage.Database,
 	blockStorage *storage.BlockStorage,
 	balanceStorage *storage.BalanceStorage,
 ) *ReconcilerHelper {
 	return &ReconcilerHelper{
+		config:         config,
 		network:        network,
 		fetcher:        fetcher,
+		database:       database,
 		blockStorage:   blockStorage,
 		balanceStorage: balanceStorage,
 	}
 }
 
-// BlockExists returns a boolean indicating if block_storage
-// contains a block. This is necessary to reconcile across
+// DatabaseTransaction returns a new read-only storage.DatabaseTransaction.
+func (h *ReconcilerHelper) DatabaseTransaction(
+	ctx context.Context,
+) storage.DatabaseTransaction {
+	return h.database.NewDatabaseTransaction(ctx, false)
+}
+
+// CanonicalBlock returns a boolean indicating if a block
+// is in the canonical chain. This is necessary to reconcile across
 // reorgs. If the block returned on an account balance fetch
 // does not exist, reconciliation will be skipped.
-func (h *ReconcilerHelper) BlockExists(
+func (h *ReconcilerHelper) CanonicalBlock(
 	ctx context.Context,
+	dbTx storage.DatabaseTransaction,
 	block *types.BlockIdentifier,
 ) (bool, error) {
-	_, err := h.blockStorage.GetBlock(ctx, types.ConstructPartialBlockIdentifier(block))
-	if err == nil {
-		return true, nil
-	}
+	return h.blockStorage.CanonicalBlockTransactional(ctx, block, dbTx)
+}
 
-	if errors.Is(err, storage.ErrBlockNotFound) {
-		return false, nil
-	}
-
-	return false, err
+// IndexAtTip returns a boolean indicating if a block
+// index is at tip (provided some acceptable
+// tip delay). If the index is ahead of the head block
+// and the head block is at tip, we consider the
+// index at tip.
+func (h *ReconcilerHelper) IndexAtTip(
+	ctx context.Context,
+	index int64,
+) (bool, error) {
+	return h.blockStorage.IndexAtTip(
+		ctx,
+		h.config.TipDelay,
+		index,
+	)
 }
 
 // CurrentBlock returns the last processed block and is used
@@ -74,8 +100,9 @@ func (h *ReconcilerHelper) BlockExists(
 // inactive reconciliation.
 func (h *ReconcilerHelper) CurrentBlock(
 	ctx context.Context,
+	dbTx storage.DatabaseTransaction,
 ) (*types.BlockIdentifier, error) {
-	return h.blockStorage.GetHeadBlockIdentifier(ctx)
+	return h.blockStorage.GetHeadBlockIdentifierTransactional(ctx, dbTx)
 }
 
 // ComputedBalance returns the balance of an account in block storage.
@@ -83,11 +110,12 @@ func (h *ReconcilerHelper) CurrentBlock(
 // package to allow for separation from a default storage backend.
 func (h *ReconcilerHelper) ComputedBalance(
 	ctx context.Context,
+	dbTx storage.DatabaseTransaction,
 	account *types.AccountIdentifier,
 	currency *types.Currency,
-	headBlock *types.BlockIdentifier,
-) (*types.Amount, *types.BlockIdentifier, error) {
-	return h.balanceStorage.GetBalance(ctx, account, currency, headBlock)
+	index int64,
+) (*types.Amount, error) {
+	return h.balanceStorage.GetBalanceTransactional(ctx, dbTx, account, currency, index)
 }
 
 // LiveBalance returns the live balance of an account.
@@ -95,7 +123,40 @@ func (h *ReconcilerHelper) LiveBalance(
 	ctx context.Context,
 	account *types.AccountIdentifier,
 	currency *types.Currency,
-	headBlock *types.BlockIdentifier,
+	index int64,
 ) (*types.Amount, *types.BlockIdentifier, error) {
-	return utils.CurrencyBalance(ctx, h.network, h.fetcher, account, currency, headBlock)
+	amt, block, err := utils.CurrencyBalance(
+		ctx,
+		h.network,
+		h.fetcher,
+		account,
+		currency,
+		index,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	return amt, block, nil
+}
+
+// PruneBalances removes all historical balance states
+// <= some index. This can significantly reduce storage
+// usage in scenarios where historical balances are only
+// retrieved once (like reconciliation).
+func (h *ReconcilerHelper) PruneBalances(
+	ctx context.Context,
+	account *types.AccountIdentifier,
+	currency *types.Currency,
+	index int64,
+) error {
+	if h.config.Data.PruningDisabled {
+		return nil
+	}
+
+	return h.balanceStorage.PruneBalances(
+		ctx,
+		account,
+		currency,
+		index,
+	)
 }

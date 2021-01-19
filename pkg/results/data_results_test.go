@@ -12,29 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package tester
+package results
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"path"
 	"testing"
 
 	"github.com/coinbase/rosetta-cli/configuration"
-	"github.com/coinbase/rosetta-cli/pkg/processor"
 
+	"github.com/coinbase/rosetta-sdk-go/asserter"
 	"github.com/coinbase/rosetta-sdk-go/fetcher"
 	"github.com/coinbase/rosetta-sdk-go/storage"
 	"github.com/coinbase/rosetta-sdk-go/syncer"
 	"github.com/coinbase/rosetta-sdk-go/types"
 	"github.com/coinbase/rosetta-sdk-go/utils"
 	"github.com/stretchr/testify/assert"
-)
-
-var (
-	tr = true
-	f  = false
 )
 
 func TestComputeCheckDataResults(t *testing.T) {
@@ -47,6 +43,7 @@ func TestComputeCheckDataResults(t *testing.T) {
 		operationCount          int64
 		activeReconciliations   int64
 		inactiveReconciliations int64
+		reconciliationFailures  int64
 
 		// balance storage values
 		provideBalanceStorage bool
@@ -89,9 +86,23 @@ func TestComputeCheckDataResults(t *testing.T) {
 				},
 			},
 		},
+		"default configuration, no storage, syncer and fetch errors": {
+			cfg: configuration.DefaultConfiguration(),
+			err: []error{
+				syncer.ErrGetNetworkStatusFailed,
+				syncer.ErrFetchBlockFailed,
+			},
+			result: &CheckDataResults{
+				Tests: &CheckDataTests{
+					RequestResponse:   false,
+					ResponseAssertion: true,
+					BlockSyncing:      &f,
+				},
+			},
+		},
 		"default configuration, no storage, assertion errors": {
 			cfg: configuration.DefaultConfiguration(),
-			err: []error{fetcher.ErrAssertionFailed},
+			err: []error{asserter.ErrAmountValueMissing},
 			result: &CheckDataResults{
 				Tests: &CheckDataTests{
 					RequestResponse:   true,
@@ -279,12 +290,54 @@ func TestComputeCheckDataResults(t *testing.T) {
 		},
 		"default configuration, no storage, reconciliation errors": {
 			cfg: configuration.DefaultConfiguration(),
-			err: []error{processor.ErrReconciliationFailure},
+			err: []error{ErrReconciliationFailure},
 			result: &CheckDataResults{
 				Tests: &CheckDataTests{
 					RequestResponse:   true,
 					ResponseAssertion: true,
 					Reconciliation:    &f,
+				},
+			},
+		},
+		"default configuration, counter storage, reconciliation errors": {
+			cfg:                    configuration.DefaultConfiguration(),
+			err:                    []error{ErrReconciliationFailure},
+			provideCounterStorage:  true,
+			activeReconciliations:  10,
+			reconciliationFailures: 19,
+			result: &CheckDataResults{
+				Tests: &CheckDataTests{
+					RequestResponse:   true,
+					ResponseAssertion: true,
+					Reconciliation:    &f,
+				},
+				Stats: &CheckDataStats{
+					ActiveReconciliations: 10,
+					FailedReconciliations: 19,
+				},
+			},
+		},
+		"default configuration, no storage, unknown errors": {
+			cfg:    configuration.DefaultConfiguration(),
+			err:    []error{errors.New("unsure how to handle this error")},
+			result: &CheckDataResults{},
+		},
+		"default configuration, counter storage no blocks, unknown errors": {
+			cfg:                   configuration.DefaultConfiguration(),
+			provideCounterStorage: true,
+			err:                   []error{errors.New("unsure how to handle this error")},
+			result: &CheckDataResults{
+				Stats: &CheckDataStats{},
+			},
+		},
+		"default configuration, counter storage with blocks, unknown errors": {
+			cfg:                   configuration.DefaultConfiguration(),
+			provideCounterStorage: true,
+			blockCount:            100,
+			err:                   []error{errors.New("unsure how to handle this error")},
+			result: &CheckDataResults{
+				Stats: &CheckDataStats{
+					Blocks: 100,
 				},
 			},
 		},
@@ -305,7 +358,11 @@ func TestComputeCheckDataResults(t *testing.T) {
 				assert.NoError(t, err)
 
 				ctx := context.Background()
-				localStore, err := storage.NewBadgerStorage(ctx, dir, false)
+				localStore, err := storage.NewBadgerStorage(
+					ctx,
+					dir,
+					storage.WithIndexCacheSize(storage.TinyIndexCacheSize),
+				)
 				assert.NoError(t, err)
 
 				logPath := path.Join(dir, "results.json")
@@ -338,6 +395,13 @@ func TestComputeCheckDataResults(t *testing.T) {
 						ctx,
 						storage.InactiveReconciliationCounter,
 						big.NewInt(test.inactiveReconciliations),
+					)
+					assert.NoError(t, err)
+
+					_, err = counterStorage.Update(
+						ctx,
+						storage.FailedReconciliationCounter,
+						big.NewInt(test.reconciliationFailures),
 					)
 					assert.NoError(t, err)
 				}

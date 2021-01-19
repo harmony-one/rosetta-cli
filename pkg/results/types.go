@@ -12,20 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package results
 
 import (
-	"os"
-
-	"github.com/coinbase/rosetta-cli/cmd"
-
-	"github.com/fatih/color"
+	"errors"
 )
 
-func main() {
-	err := cmd.Execute()
-	if err != nil {
-		color.Red("Command Failed: %s", err.Error())
-		os.Exit(1)
-	}
-}
+const (
+	// TimeElapsedCounter tracks the total time elapsed in seconds.
+	TimeElapsedCounter = "time_elapsed"
+)
+
+var (
+	// ErrReconciliationFailure is returned if reconciliation fails.
+	// TODO: Move to reconciler package (had to remove from processor
+	// to prevent circular dependency)
+	ErrReconciliationFailure = errors.New("reconciliation failure")
+)
