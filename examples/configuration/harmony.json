@@ -1,0 +1,57 @@
+{
+  "network": {
+    "blockchain": "Harmony",
+    "network": "Testnet",
+    "sub_network_identifier": {
+      "network": "shard 0",
+      "metadata": {
+        "is_beacon": true
+      }
+    }
+  },
+  "online_url": "http://localhost:9799",
+  "data_directory": "",
+  "http_timeout": 10,
+  "max_retries": 5,
+  "retry_elapsed_time": 0,
+  "max_online_connections": 120,
+  "max_sync_concurrency": 64,
+  "tip_delay": 300,
+  "max_reorg_depth": 100,
+  "log_configuration": false,
+  "compression_disabled": false,
+  "memory_limit_disabled": false,
+  "construction": null,
+  "data": {
+    "active_reconciliation_concurrency": 16,
+    "inactive_reconciliation_concurrency": 4,
+    "inactive_reconciliation_frequency": 250,
+    "log_blocks": true,
+    "log_transactions": true,
+    "log_balance_changes": true,
+    "log_reconciliations": true,
+    "ignore_reconciliation_error": true,
+    "exempt_accounts": "",
+    "bootstrap_balances": "",
+    "interesting_accounts": "",
+    "reconciliation_disabled": false,
+    "reconciliation_drain_disabled": false,
+    "inactive_discrepency_search_disabled": false,
+    "balance_tracking_disabled": false,
+    "coin_tracking_disabled": false,
+    "status_port": 9090,
+    "results_output_file": "",
+    "pruning_disabled": false,
+    "initial_balance_fetch_disabled": false,
+    "parse_interval": {
+      "start_block_identifier": {
+        "index": 0,
+        "hash": "0xd4323aad207d6b427e489e933777a7ef3a158d31655511422f313102aef4eaa0"
+      },
+      "end_block_identifier": {
+        "index": 20,
+        "hash": "0x21373895194b89608afa7babec5580bb28a9f743ff1428a95b45ed2e6961ba86"
+      }
+    }
+  }
+}
