@@ -1,0 +1,79 @@
+{
+  "network": {
+    "blockchain": "Harmony",
+    "network": "Mainnet",
+    "sub_network_identifier": {
+      "network": "shard 0",
+      "metadata": {
+        "is_beacon": true
+      }
+    }
+  },
+  "online_url": "http://44.227.217.55:9700",
+  "http_timeout": 300,
+  "max_retries": 0,
+  "retry_elapsed_time": 5,
+  "max_online_connections": 0,
+  "max_sync_concurrency": 0,
+  "tip_delay": 360,
+  "log_configuration": false,
+  "data": {
+    "active_reconciliation_concurrency": 0,
+    "inactive_reconciliation_concurrency": 0,
+    "inactive_reconciliation_frequency": 0,
+    "log_blocks": true,
+    "log_transactions": true,
+    "log_balance_changes": true,
+    "log_reconciliations": true,
+    "ignore_reconciliation_error": false,
+    "exempt_accounts": "",
+    "bootstrap_balances": "",
+    "interesting_accounts": "",
+    "reconciliation_disabled": false,
+    "balance_tracking_disabled": false,
+    "coin_tracking_disabled": false,
+    "end_conditions": {
+      "duration": 20,
+      "reconciliation_coverage": {
+        "coverage": 0.95,
+        "from_tip": true
+      }
+    },
+    "results_output_file": ""
+  },
+  "construction": {
+    "offline_url": "http://44.227.217.55:9700",
+    "max_offline_connections": 1,
+    "stale_depth": 0,
+    "broadcast_limit": 0,
+    "ignore_broadcast_failures": false,
+    "clear_broadcasts": false,
+    "broadcast_behind_tip": false,
+    "block_broadcast_limit": 0,
+    "rebroadcast_all": false,
+    "constructor_dsl_file": "harmony_testnet.ros",
+    "prefunded_accounts": [
+      {
+        "privkey": "2ed2677337c1c046c8ea7cf1e1432fcc56c3a9ef190d48dbbbbbb505bec7e963",
+        "account_identifier": {
+          "address": "one184fuvcjytxfn4c2eajhqlukt7ejeu02nyzqv0d",
+          "metadata": {
+            "hex_address": "0x3d53C6624459933AE159ecAe0fF2CBf6659e3d53"
+          }
+        },
+        "curve_type": "secp256k1",
+        "currency": {
+          "symbol": "ONE",
+          "decimals": 18
+        }
+      }
+    ],
+    "end_conditions": {
+      "create_account": 1,
+      "transfer": 1,
+      "cross_shard_transfer": 1,
+      "contract_creation": 1,
+      "staking": 1
+    }
+  }
+}

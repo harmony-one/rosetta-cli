@@ -1,0 +1,333 @@
+request_funds(1){
+  find_account{
+    currency = {"symbol":"ONE", "decimals":18};
+    random_account = find_balance({
+      "minimum_balance":{
+        "value": "0",
+        "currency": {{currency}}
+      },
+      "create_limit":1
+    });
+  },
+
+  request{
+    loaded_account = find_balance({
+      "account_identifier": {{random_account.account_identifier}},
+      "minimum_balance":{
+        "value": "10000000000000000",
+        "currency": {{currency}}
+      }
+    });
+  }
+}
+
+create_account(1){
+  create_account{
+    network = {"network":"Testnet", "blockchain":"Harmony", "sub_network_identifier":{"network": "shard 0", "metadata":{"is_beacon": true}}};
+    key = generate_key({"curve_type": "secp256k1"});
+    account = derive({
+      "network_identifier": {{network}},
+      "public_key": {{key.public_key}}
+    });
+
+    // If the account is not saved, the key will be lost!
+    save_account({
+      "account_identifier": {{account.account_identifier}},
+      "keypair": {{key}}
+    });
+  }
+}
+
+transfer(1){
+  transfer{
+    transfer.network = {"network":"Testnet", "blockchain":"Harmony", "sub_network_identifier":{"network": "shard 0", "metadata":{"is_beacon": true}}};
+    currency = {"symbol":"ONE", "decimals":18};
+    sender = find_balance({
+      "minimum_balance":{
+        "value": "10000000000000000",
+        "currency": {{currency}}
+      }
+    });
+
+    max_fee = "53000000000000";
+    available_amount = {{sender.balance.value}} - {{max_fee}};
+    recipient_amount = random_number({"minimum": "1", "maximum": {{available_amount}}});
+
+    sender_amount = 0 - {{recipient_amount}};
+    recipient = find_balance({
+      "not_account_identifier":[{{sender.account_identifier}}],
+      "minimum_balance":{
+        "value": "0",
+        "currency": {{currency}}
+      },
+      "create_limit": 100,
+      "create_probability": 50
+    });
+    transfer.confirmation_depth = "1";
+    transfer.operations = [
+      {
+        "operation_identifier":{"index":0},
+        "type":"NativeTransfer",
+        "account":{{sender.account_identifier}},
+        "amount":{
+          "value":{{sender_amount}},
+          "currency":{{currency}}
+        }
+      },
+      {
+        "operation_identifier":{"index":1},
+        "related_operations":[{"index":0}],
+        "type":"NativeTransfer",
+        "account":{{recipient.account_identifier}},
+        "amount":{
+          "value":{{recipient_amount}},
+          "currency":{{currency}}
+        }
+      }
+    ];
+  }
+}
+
+cross_shard_transfer(10){
+  transfer{
+    transfer.network = {"network":"Testnet", "blockchain":"Harmony", "sub_network_identifier":{"network": "shard 0", "metadata":{"is_beacon": true}}};
+    currency = {"symbol":"ONE", "decimals":18};
+    sender = find_balance({
+      "minimum_balance":{
+        "value": "10000000000000000",
+        "currency": {{currency}}
+      }
+    });
+
+    max_fee = "53000000000000";
+    available_amount = {{sender.balance.value}} - {{max_fee}};
+    recipient_amount = random_number({"minimum": "1", "maximum": {{available_amount}}});
+
+    sender_amount = 0 - {{recipient_amount}};
+    recipient = find_balance({
+      "not_account_identifier":[{{sender.account_identifier}}],
+      "minimum_balance":{
+        "value": "0",
+        "currency": {{currency}}
+      },
+      "create_limit": 100,
+      "create_probability": 50
+    });
+    transfer.confirmation_depth = "1";
+    transfer.operations = [
+      {
+        "operation_identifier":{"index":0},
+        "type":"NativeCrossShardTransfer",
+        "account":{{sender.account_identifier}},
+        "amount":{
+          "value":{{sender_amount}},
+          "currency":{{currency}}
+        },
+        "metadata":{
+          "from":{{sender.account_identifier}},
+          "to": {{recipient.account_identifier}}
+        }
+      }
+    ];
+    transfer.preprocess_metadata = {"to_shard":1, "from_shard":0};
+  }
+}
+
+contract_creation(10){
+  transfer{
+    transfer.network = {"network":"Testnet", "blockchain":"Harmony", "sub_network_identifier":{"network": "shard 0", "metadata":{"is_beacon": true}}};
+    currency = {"symbol":"ONE", "decimals":18};
+    sender = find_balance({
+      "minimum_balance":{
+        "value": "10000000000000000",
+        "currency": {{currency}}
+      }
+    });
+
+    max_fee = "530000000000000000";
+    recipient = find_balance({
+      "not_account_identifier":[{{sender.account_identifier}}],
+      "minimum_balance":{
+        "value": "0",
+        "currency": {{currency}}
+      },
+      "create_limit": 100,
+      "create_probability": 50
+    });
+    transfer.confirmation_depth = "1";
+    transfer.operations = [
+      {
+        "operation_identifier":{"index":0},
+        "type":"ContractCreation",
+        "account":{{sender.account_identifier}},
+        "amount":{
+          "value":"0",
+          "currency":{{currency}}
+        }
+      }
+    ];
+    transfer.preprocess_metadata = {
+      "data": "0x608060405234801561001057600080fd5b50336000806101000a81548173ffffffffffffffffffffffffffffffffffffffff021916908373ffffffffffffffffffffffffffffffffffffffff16021790555061019c806100606000396000f3fe608060405234801561001057600080fd5b50600436106100415760003560e01c8063445df0ac146100465780638da5cb5b14610064578063fdacd576146100ae575b600080fd5b61004e6100dc565b6040518082815260200191505060405180910390f35b61006c6100e2565b604051808273ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff16815260200191505060405180910390f35b6100da600480360360208110156100c457600080fd5b8101908080359060200190929190505050610107565b005b60015481565b6000809054906101000a900473ffffffffffffffffffffffffffffffffffffffff1681565b6000809054906101000a900473ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff163373ffffffffffffffffffffffffffffffffffffffff16141561016457806001819055505b5056fea265627a7a723158209b80813a158b44af65aee232b44c0ac06472c48f4abbe298852a39f0ff34a9f264736f6c63430005100032"
+    };
+  }
+}
+
+staking(1){
+  create_validator{
+    create_validator.network = {"network":"Testnet", "blockchain":"Harmony", "sub_network_identifier":{"network": "shard 0", "metadata":{"is_beacon": true}}};
+    currency = {"symbol":"ONE", "decimals":18};
+    sender = find_balance({
+      "minimum_balance":{
+        "value": "200000000000000000",
+        "currency": {{currency}}
+      }
+    });
+
+    max_fee = "20000000000000000";
+    recipient = find_balance({
+      "not_account_identifier":[{{sender.account_identifier}}],
+      "minimum_balance":{
+        "value": "0",
+        "currency": {{currency}}
+      },
+      "create_limit": 100,
+      "create_probability": 50
+    });
+    validator_address = {{sender.account_identifier.address}};
+    validator_account_identifier = {{sender.account_identifier}};
+    create_validator.confirmation_depth = "1";
+    create_validator.operations = [
+      {
+        "operation_identifier":{"index":0},
+        "type":"CreateValidator",
+        "status":"",
+        "account":{{sender.account_identifier}},
+        "amount":{
+          "value":"-30000000000000000000000",
+          "currency":{{currency}}
+        },
+        "Metadata":{
+          "validatorAddress":{{sender.account_identifier.address}},
+          "commissionRate":100000000000000000,
+          "maxCommissionRate":900000000000000000,
+          "maxChangeRate":50000000000000000,
+          "minSelfDelegation":20000,
+          "maxTotalDelegation":50000,
+          "amount":30000,
+          "name":"Alice",
+          "website":"alice.harmony.one",
+          "identity":"alice",
+          "securityContact":"Bob",
+          "details":"Don't mess with me!!!"
+        }
+      }
+    ];
+    create_validator.preprocess_metadata = {
+      "from_shard":0,
+      "to_shard":0,
+      "slot_pub_keys":[
+        "0x30b2c38b1316da91e068ac3bd8751c0901ef6c02a1d58bc712104918302c6ed03d5894671d0c816dad2b4d303320f202"
+      ],
+      "slot_key_sigs":[
+        "0x68f800b6adf657b674903e04708060912b893b7c7b500788808247550ab3e186e56a44ebf3ca488f8ed1a42f6cef3a04bd5d2b2b7eb5a767848d3135b362e668ce6bba42c7b9d5666d8e3a83be707b5708e722c58939fe9b07c170f3b7062414"
+      ]
+    };
+  },
+  
+  edit_validator{
+    edit_validator.network = {"network":"Testnet", "blockchain":"Harmony", "sub_network_identifier":{"network": "shard 0", "metadata":{"is_beacon": true}}};
+    currency = {"symbol":"ONE", "decimals":18};
+    sender = find_balance({
+      "minimum_balance":{
+        "value": "200000000000000000",
+        "currency": {{currency}}
+      }
+    });
+
+    max_fee = "20000000000000000";
+    recipient = find_balance({
+      "not_account_identifier":[{{sender.account_identifier}}],
+      "minimum_balance":{
+        "value": "0",
+        "currency": {{currency}}
+      },
+      "create_limit": 100,
+      "create_probability": 50
+    });
+    edit_validator.confirmation_depth = "1";
+    edit_validator.operations = [
+      {
+        "operation_identifier":{"index":0},
+        "type":"EditValidator",
+        "status":"",
+        "account":{{sender.account_identifier}},
+        "amount":{
+          "value":0,
+          "currency":{{currency}}
+        },
+        "Metadata":{
+          "validatorAddress":{{validator_address}},
+          "commissionRate":100000000000000000,
+          "minSelfDelegation":20000,
+          "maxTotalDelegation":50000,
+          "name":"Alice",
+          "website":"alice.harmony.one",
+          "identity":"alice",
+          "securityContact":"Bob",
+          "details":"Don't mess with me!!!"
+        }
+      }
+    ];
+    edit_validator.preprocess_metadata = {
+      "from_shard":0,
+      "to_shard":0,
+      "slot_pub_key_to_add":"0x30b2c38b1316da91e068ac3bd8751c0901ef6c02a1d58bc712104918302c6ed03d5894671d0c816dad2b4d303320f202",
+      "slot_pub_key_to_remove":"0x30b2c38b1316da91e068ac3bd8751c0901ef6c02a1d58bc712104918302c6ed03d5894671d0c816dad2b4d303320f202",
+      "slot_key_to_add_sig":"0x68f800b6adf657b674903e04708060912b893b7c7b500788808247550ab3e186e56a44ebf3ca488f8ed1a42f6cef3a04bd5d2b2b7eb5a767848d3135b362e668ce6bba42c7b9d5666d8e3a83be707b5708e722c58939fe9b07c170f3b7062414"
+    };
+  },
+
+  delegate{
+    delegate.network = {"network":"Testnet", "blockchain":"Harmony", "sub_network_identifier":{"network": "shard 0", "metadata":{"is_beacon": true}}};
+    currency = {"symbol":"ONE", "decimals":18};
+    sender = find_balance({
+      "minimum_balance":{
+        "value": "200000000000000000",
+        "currency": {{currency}}
+      }
+    });
+
+    max_fee = "20000000000000000";
+    recipient = find_balance({
+      "not_account_identifier":[{{sender.account_identifier}}],
+      "minimum_balance":{
+        "value": "0",
+        "currency": {{currency}}
+      },
+      "create_limit": 100,
+      "create_probability": 50
+    });
+    delegate.confirmation_depth = "1";
+    delegate.operations = [
+      {
+        "operation_identifier":{"index":0},
+        "type":"Delegate",
+        "status":"",
+        "account":{{sender.account_identifier}},
+        "amount":{
+          "value":"-1000000000000000000000",
+          "currency":{{currency}}
+        },
+        "Metadata":{
+          "validatorAddress":{{validator_address}},
+          "delegatorAddress":{{sender.account_identifier.address}},
+          "amount":1000
+        }
+      }
+    ];
+    delegate.preprocess_metadata = {
+      "from_shard":0,
+      "to_shard":0
+    };
+  }
+}
