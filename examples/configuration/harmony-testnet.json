@@ -9,7 +9,7 @@
       }
     }
   },
-  "online_url": "http://161.97.153.139:9700",
+  "online_url": "http://127.0.0.1:9700",
   "http_timeout": 300,
   "max_retries": 0,
   "retry_elapsed_time": 5,
@@ -21,13 +21,13 @@
     "active_reconciliation_concurrency": 0,
     "inactive_reconciliation_concurrency": 0,
     "inactive_reconciliation_frequency": 0,
-    "bootstrap_balances": "bootstrap_balances.json",
     "log_blocks": true,
     "log_transactions": true,
     "log_balance_changes": true,
     "log_reconciliations": true,
     "ignore_reconciliation_error": false,
     "exempt_accounts": "",
+    "bootstrap_balances": "",
     "interesting_accounts": "",
     "reconciliation_disabled": false,
     "balance_tracking_disabled": false,
@@ -42,7 +42,7 @@
     "results_output_file": ""
   },
   "construction": {
-    "offline_url": "http://161.97.153.139:9700",
+    "offline_url": "http://127.0.0.1:9700",
     "max_offline_connections": 1,
     "stale_depth": 0,
     "broadcast_limit": 0,
@@ -54,11 +54,11 @@
     "constructor_dsl_file": "harmony_testnet.ros",
     "prefunded_accounts": [
       {
-        "privkey": "1f84c95ac16e6a50f08d44c7bde7aff8742212fda6e4321fde48bf83bef266dc",
+        "privkey": "private_key",
         "account_identifier": {
-          "address": "one155jp2y76nazx8uw5sa94fr0m4s5aj8e5xm6fu3",
+          "address": "address",
           "metadata": {
-            "hex_address": "0xA5241513DA9F4463F1d4874b548dFBAC29D91f34"
+            "hex_address": "hex_address"
           }
         },
         "curve_type": "secp256k1",
